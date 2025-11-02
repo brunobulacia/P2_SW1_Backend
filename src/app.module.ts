@@ -6,7 +6,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { DiagramsModule } from './diagrams/diagrams.module';
 import { DiagramMembersModule } from './diagram_members/diagram_members.module';
 import { DiagramInvitesModule } from './diagram_invites/diagram_invites.module';
-import { DiagramSocketModule } from './diagram-socket/diagram-socket.module';
+import { DiagramSocketModule } from './diagram_socket/diagram-socket.module';
 import { ExportModule } from './export/export.module';
 
 @Module({

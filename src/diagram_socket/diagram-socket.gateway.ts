@@ -1,4 +1,5 @@
 // src/diagram_socket/diagram-socket.gateway.ts
+import OpenAI from 'openai';
 import {
   OnGatewayConnection,
   OnGatewayDisconnect,
@@ -16,17 +17,16 @@ import { JwtService } from '@nestjs/jwt';
 import { CreateDiagramInviteDto } from 'src/diagram_invites/dto/create-diagram_invite.dto';
 import { DiagramsService } from 'src/diagrams/diagrams.service';
 
-// importar GoogleGenAI
-import { GoogleGenAI } from '@google/genai';
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const openai = new OpenAI({
+  apiKey: process.env['OPENAI_API_KEY'],
+});
 
 @WebSocketGateway({
   cors: {
-    origin: ['http://localhost:3000', 'http://54.207.207.246:3000'], // ajusta si tu frontend corre en otra URL
+    origin: ['http://localhost:3000', 'http://54.207.207.246:3000'],
     credentials: true,
   },
-  namespace: '/', // default
+  namespace: '/',
 })
 export class DiagramSocketGateway
   implements OnGatewayConnection, OnGatewayDisconnect
@@ -207,22 +207,83 @@ export class DiagramSocketGateway
     @MessageBody() data: any,
     @ConnectedSocket() client: Socket,
   ): Promise<void> {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
-      contents: data.prompt,
-    });
-    console.log(response.text);
-    client.emit('agent-generated', { text: response.text });
+    try {
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a coding assistant that generates diagrams.',
+          },
+          {
+            role: 'user',
+            content: data.prompt || 'Are semicolons optional in JavaScript?',
+          },
+        ],
+      });
+
+      const responseText =
+        completion.choices[0]?.message?.content || 'No response generated';
+      console.log(responseText);
+      client.emit('agent-generated', { text: responseText });
+    } catch (error) {
+      console.error('Error generating agent response:', error);
+      client.emit('agent-generated', {
+        text: 'Error generating response',
+        error: error.message,
+      });
+    }
   }
 
   @SubscribeMessage('generate-diagram')
   async handleGenerateDiagram(
-    @MessageBody() data: { prompt: string; diagramId: string },
+    @MessageBody()
+    data: {
+      prompt: string;
+      diagramId: string;
+      currentDiagram?: { nodes: any[]; edges: any[] };
+    },
     @ConnectedSocket() client: Socket,
   ): Promise<void> {
     try {
+      // Obtener el diagrama actual de la base de datos si no se envió
+      let currentDiagram = data.currentDiagram;
+      if (!currentDiagram) {
+        const diagram = await this.diagramService.findOne(data.diagramId);
+        currentDiagram = (diagram as any).model || { nodes: [], edges: [] };
+      }
+
+      const hasExistingDiagram =
+        currentDiagram?.nodes && currentDiagram.nodes.length > 0;
+
       const systemPrompt = `
-Eres un experto en UML y diseño de diagramas de clases. Tu tarea es generar un diagrama UML en formato JSON basado en la descripción del usuario.
+Eres un experto en UML y diseño de diagramas de clases. Tu tarea es ${hasExistingDiagram ? 'MODIFICAR Y EXTENDER' : 'generar'} un diagrama UML en formato JSON basado en la descripción del usuario.
+
+${
+  hasExistingDiagram
+    ? `
+⚠️ INSTRUCCIONES CRÍTICAS PARA MODIFICACIÓN:
+1. DEBES PRESERVAR TODAS las clases existentes del diagrama actual
+2. DEBES PRESERVAR TODAS las relaciones (edges) existentes
+3. SOLO AGREGA las nuevas clases solicitadas por el usuario
+4. SOLO AGREGA nuevas relaciones si el usuario las menciona explícitamente
+5. NO ELIMINES ni modifiques clases o relaciones existentes
+6. Las nuevas clases deben tener IDs únicos diferentes a los existentes
+7. Posiciona las nuevas clases en áreas libres del canvas (evita solapamiento)
+
+DIAGRAMA ACTUAL QUE DEBES PRESERVAR:
+${JSON.stringify(currentDiagram, null, 2)}
+
+Tu respuesta DEBE incluir:
+- TODOS los nodos existentes (sin modificar)
+- TODOS los edges existentes (sin modificar)  
+- Los nuevos nodos solicitados
+- Nuevos edges solo si son necesarios
+`
+    : ''
+}
+
+Tu tarea es ${hasExistingDiagram ? 'AGREGAR al diagrama existente' : 'generar un diagrama nuevo'} siguiendo este formato.
 
 Formato esperado del JSON:
 {
@@ -328,18 +389,33 @@ EJEMPLO de relación muchos-a-muchos (Usuario-Producto):
 }
 
 Reglas importantes:
+${
+  hasExistingDiagram
+    ? `
+🚨 REGLAS CRÍTICAS PARA MODIFICACIÓN (OBLIGATORIO):
+1. NO CREAR UN DIAGRAMA NUEVO - Debes MODIFICAR el diagrama existente
+2. COPIA EXACTAMENTE todos los nodos existentes (mismo id, data, position)
+3. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
+4. SOLO AGREGA las nuevas clases que el usuario solicita
+5. Genera IDs únicos para las nuevas clases usando timestamps únicos
+6. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
+7. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
+8. NO modifiques ni elimines nada del diagrama existente
+9. Responde con el JSON completo: nodos existentes + nodos nuevos + edges existentes + edges nuevos (si aplica)
+`
+    : `
 1. Genera IDs únicos usando timestamps
-2. SIEMPRE incluye relaciones entre las clases (edges) - NO dejes el diagrama sin relaciones
+2. SIEMPRE incluye relaciones entre las clases (edges) si hay múltiples clases
 3. Para herencia, usa type: "inheritance" y sourceHandle/targetHandle apropiados
 4. Para asociaciones, usa type: "association" con cardinalidades apropiadas (ej: "1..1", "1..*", "0..1")
 5. Posiciona las clases de manera que no se solapen
+`
+}
 6. Usa tipos de datos apropiados (int, string, boolean, etc.)
 7. Incluye SOLO atributos relevantes para cada clase, NO incluyas métodos
 8. Siempre deja el array "methods" vacío: "methods": []
 9. Si hay múltiples clases, crea relaciones lógicas entre ellas (asociaciones, herencia, etc.)
 10. Responde ÚNICAMENTE con el JSON válido, SIN markdown, SIN explicaciones, SOLO el objeto JSON puro
-
-Descripción del usuario: ${data.prompt}
 
 IMPORTANTE: Si el usuario menciona múltiples clases, DEBES crear relaciones entre ellas. Ejemplos:
 - Usuario y Producto: relación muchos-a-muchos con clase de asociación intermedia
@@ -356,62 +432,96 @@ Para relaciones muchos-a-muchos (como Usuario-Producto), crear:
 3. La clase intermedia debe tener isAssociationClass: true
 
 OBLIGATORIO: Siempre incluye al menos una relación si hay más de una clase. NUNCA dejes el diagrama sin edges.
+
+IMPORTANTE: Responde SOLO con el JSON del diagrama, SIN explicaciones, SIN markdown, SOLO el objeto JSON puro.
+
+IMPORTANTE: Si el usuario te pide aumentar algo al JSON del diagrama, no se debe crear otro diagrama desde cero, sino aumentar el diagrama existente con las nuevas clases/relaciones solicitadas.
+
 `;
 
-      // Intentar con diferentes modelos y reintentos
-      let response;
+      // Usar OpenAI con reintentos
+      let completion;
       let lastError;
 
-      const models = ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+      const models = ['gpt-4o', 'gpt-4-turbo', 'gpt-3.5-turbo'];
 
       for (const model of models) {
         try {
-          console.log(`🤖 Intentando con modelo: ${model}`);
-          response = await ai.models.generateContent({
+          console.log(`🤖 Intentando con modelo OpenAI: ${model}`);
+
+          const userMessage = hasExistingDiagram
+            ? `🚨 IMPORTANTE: Ya existe un diagrama con ${currentDiagram?.nodes?.length || 0} clases y ${currentDiagram?.edges?.length || 0} relaciones. 
+            
+NO CREES UN DIAGRAMA NUEVO. Debes:
+1. COPIAR todos los nodos existentes tal cual están
+2. COPIAR todos los edges existentes tal cual están  
+3. AGREGAR las nuevas clases solicitadas: ${data.prompt}
+
+EJEMPLO DE RESPUESTA ESPERADA:
+{
+  "nodes": [
+    ...todos los nodos existentes copiados exactamente...,
+    ...nuevos nodos solicitados...
+  ],
+  "edges": [
+    ...todos los edges existentes copiados exactamente...,
+    ...nuevos edges solo si se solicitan...
+  ]
+}
+
+Solicitud del usuario: ${data.prompt}`
+            : `Genera un diagrama UML basado en: ${data.prompt}`;
+
+          completion = await openai.chat.completions.create({
             model: model,
-            contents: [
-              { role: 'user', parts: [{ text: systemPrompt }] },
+            messages: [
+              {
+                role: 'system',
+                content: systemPrompt,
+              },
               {
                 role: 'user',
-                parts: [
-                  { text: `Genera un diagrama UML basado en: ${data.prompt}` },
-                ],
+                content: userMessage,
               },
             ],
+            temperature: 0.3, // Temperatura más baja para ser más consistente
+            response_format: { type: 'json_object' },
           });
-          console.log(`✅ Éxito con modelo: ${model}`);
+          console.log(`✅ Éxito con modelo OpenAI: ${model}`);
           break; // Si funciona, salir del loop
         } catch (error) {
           console.log(`❌ Error con modelo ${model}:`, error.message);
           lastError = error;
 
-          // Si es error 503 (sobrecarga), esperar un poco y continuar con el siguiente modelo
-          if (error.status === 503) {
+          // Si es error de rate limit o sobrecarga, esperar y continuar con el siguiente modelo
+          if (error.status === 429 || error.status === 503) {
             console.log(
               `⏳ Modelo ${model} sobrecargado, probando siguiente...`,
             );
-            await new Promise((resolve) => setTimeout(resolve, 1000)); // Esperar 1 segundo
+            await new Promise((resolve) => setTimeout(resolve, 2000)); // Esperar 2 segundos
             continue;
           }
 
-          // Si no es 503, lanzar el error inmediatamente
+          // Si no es 429/503, lanzar el error inmediatamente
           throw error;
         }
       }
 
-      // Si llegamos aquí y no hay response, todos los modelos fallaron
-      if (!response) {
-        throw lastError || new Error('Todos los modelos de IA fallaron');
+      // Si llegamos aquí y no hay completion, todos los modelos fallaron
+      if (!completion) {
+        throw lastError || new Error('Todos los modelos de OpenAI fallaron');
       }
 
-      // Limpiar la respuesta de cualquier markdown
-      let cleanText = response.text || '{}';
-      cleanText = cleanText
+      // Obtener la respuesta del modelo
+      const responseText = completion.choices[0]?.message?.content || '{}';
+
+      // Limpiar la respuesta de cualquier markdown (por si acaso)
+      let cleanText = responseText
         .replace(/```json\n?/g, '')
         .replace(/```\n?/g, '')
         .trim();
 
-      console.log('🤖 Raw AI response:', response.text);
+      console.log('🤖 Raw OpenAI response:', responseText);
       console.log('🧹 Cleaned text:', cleanText);
 
       const diagramJson = JSON.parse(cleanText);
@@ -429,7 +539,7 @@ OBLIGATORIO: Siempre incluye al menos una relación si hay más de una clase. NU
       client.emit('diagram-generated', {
         success: true,
         diagram: diagramJson,
-        message: 'Diagrama generado exitosamente',
+        message: 'Diagrama generado exitosamente con OpenAI',
       });
 
       // Broadcast a todos los clientes en la room del diagrama
