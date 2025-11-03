@@ -60,19 +60,10 @@ export class DiagramSocketGateway
           diagramId,
           client,
         );
-      console.log(
-        `👥 Participantes restantes en diagrama ${diagramId}:`,
-        participants.length,
-      );
-
-      // Notificar a los participantes restantes en esta room
       const room = `diagram:${diagramId}`;
       this.wss.to(room).emit('participants-updated', { participants });
     });
-
-    // Remover el cliente del tracking general
     this.diagramSocketService.removeClient(client);
-
     this.wss.emit('message', {
       conexiones: this.diagramSocketService.getClientCount(),
     });
@@ -85,17 +76,11 @@ export class DiagramSocketGateway
   ) {
     const room = `diagram:${data.diagramId}`;
     client.join(room);
-
-    // Agregar participante al tracking
     const participants = this.diagramSocketService.addParticipantToDiagram(
       String(data.diagramId),
       client,
     );
-
-    // Notificar a todos en la room sobre los participantes actualizados
     client.to(room).emit('participants-updated', { participants });
-
-    // Enviar lista actual de participantes al nuevo participante
     client.emit('participants-updated', { participants });
     client.emit('joined-diagram', { diagramId: data.diagramId });
   }
@@ -107,14 +92,10 @@ export class DiagramSocketGateway
   ) {
     const room = `diagram:${data.diagramId}`;
     client.leave(room);
-
-    // Remover participante del tracking
     const participants = this.diagramSocketService.removeParticipantFromDiagram(
       String(data.diagramId),
       client,
     );
-
-    // Notificar a los participantes restantes
     client.to(room).emit('participants-updated', { participants });
   }
 
@@ -134,17 +115,12 @@ export class DiagramSocketGateway
     @MessageBody() data: { diagramId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    // Actualizar timestamp del participante para mantenerlo activo
     const participants = this.diagramSocketService.getDiagramParticipants(
       data.diagramId,
     );
     const participant = participants.find((p) => p.socketId === client.id);
-
     if (participant) {
       participant.joinedAt = new Date();
-      console.log(
-        `💓 Heartbeat recibido de ${client.id} en diagrama ${data.diagramId}`,
-      );
     }
   }
 
@@ -169,8 +145,7 @@ export class DiagramSocketGateway
     @MessageBody()
     data: {
       id: string;
-      model: any; // { nodes, edges, metadata? }
-      // NO sourceId
+      model: any;
     },
     @ConnectedSocket() client: Socket,
   ): Promise<void> {
@@ -184,21 +159,14 @@ export class DiagramSocketGateway
       return;
     }
 
-    // 👉 Solo pasamos campos válidos al service/Prisma
     const updatedDiagram = await this.diagramService.update(id, {
       model,
     } as any);
-
     const room = `diagram:${id}`;
-
-    // Broadcast a todos EXCEPTO el emisor, dentro de la misma room
     client.to(room).emit('diagram-updated', {
       id: updatedDiagram.id,
       model: updatedDiagram.model,
-      // sin sourceId
     });
-
-    // ACK al emisor (sin el modelo completo para ahorrar ancho de banda)
     client.emit('diagram-updated:ack', { id, ok: true });
   }
 
@@ -484,13 +452,13 @@ Solicitud del usuario: ${data.prompt}`
                 content: userMessage,
               },
             ],
-            temperature: 0.3, // Temperatura más baja para ser más consistente
+            temperature: 0.3,
             response_format: { type: 'json_object' },
           });
-          console.log(`✅ Éxito con modelo OpenAI: ${model}`);
+          console.log(`Éxito con modelo OpenAI: ${model}`);
           break; // Si funciona, salir del loop
         } catch (error) {
-          console.log(`❌ Error con modelo ${model}:`, error.message);
+          console.log(`Error con modelo ${model}:`, error.message);
           lastError = error;
 
           // Si es error de rate limit o sobrecarga, esperar y continuar con el siguiente modelo
@@ -521,14 +489,7 @@ Solicitud del usuario: ${data.prompt}`
         .replace(/```\n?/g, '')
         .trim();
 
-      console.log('🤖 Raw OpenAI response:', responseText);
-      console.log('🧹 Cleaned text:', cleanText);
-
       const diagramJson = JSON.parse(cleanText);
-      console.log(
-        '📊 Parsed diagram JSON:',
-        JSON.stringify(diagramJson, null, 2),
-      );
 
       // Actualizar el diagrama en la base de datos
       const updatedDiagram = await this.diagramService.update(data.diagramId, {
@@ -542,7 +503,6 @@ Solicitud del usuario: ${data.prompt}`
         message: 'Diagrama generado exitosamente con OpenAI',
       });
 
-      // Broadcast a todos los clientes en la room del diagrama
       const room = `diagram:${data.diagramId}`;
       client.to(room).emit('diagram-updated', {
         id: updatedDiagram.id,
@@ -554,6 +514,168 @@ Solicitud del usuario: ${data.prompt}`
         success: false,
         error:
           'Error al generar el diagrama. Por favor, intenta con una descripción más específica.',
+        message: error.message,
+      });
+    }
+  }
+
+  //PROCESAR FOTO
+  @SubscribeMessage('process-diagram-image')
+  async handleProcessDiagramImage(
+    @MessageBody()
+    data: {
+      image: string; // base64 string
+      diagramId: string;
+      fileName?: string;
+      currentDiagram?: { nodes: any[]; edges: any[] };
+    },
+    @ConnectedSocket() client: Socket,
+  ): Promise<void> {
+    try {
+      console.log(`📷 Procesando imagen de diagrama para: ${data.diagramId}`);
+
+      // Obtener el diagrama actual si existe
+      let currentDiagram = data.currentDiagram;
+      if (!currentDiagram) {
+        const diagram = await this.diagramService.findOne(data.diagramId);
+        currentDiagram = (diagram as any).model || { nodes: [], edges: [] };
+      }
+
+      const hasExistingDiagram =
+        currentDiagram?.nodes && currentDiagram.nodes.length > 0;
+
+      // Preparar el prompt para el modelo de visión
+      const visionPrompt = `
+Analiza esta imagen de un diagrama de clases UML y genera un JSON con el formato especificado.
+
+${
+  hasExistingDiagram
+    ? `
+⚠️ DIAGRAMA EXISTENTE - Debes PRESERVAR y EXTENDER:
+${JSON.stringify(currentDiagram, null, 2)}
+
+INSTRUCCIONES:
+1. COPIA todos los nodos y edges existentes
+2. AGREGA las nuevas clases de la imagen
+3. NO elimines nada del diagrama existente
+`
+    : 'Genera un diagrama nuevo desde cero.'
+}
+
+Identifica en la imagen:
+1. Todas las clases (nombres, atributos con tipos y visibilidad)
+2. Relaciones entre clases (herencia, asociación, composición, agregación, etc.)
+3. Cardinalidades en las relaciones (1..1, 1..*, 0..1, *, etc.)
+
+Formato JSON esperado (idéntico al que usamos):
+{
+  "nodes": [
+    {
+      "id": "node-[timestamp único]",
+      "data": {
+        "label": "NombreClase",
+        "methods": [],
+        "attributes": [
+          {
+            "id": "attr-[timestamp]",
+            "name": "nombreAtributo",
+            "type": "tipo de dato",
+            "visibility": "public|private|protected"
+          }
+        ],
+        "isAssociationClass": false
+      },
+      "type": "textUpdater",
+      "position": {"x": número, "y": número}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-[source]-[target]-[type]-[timestamp]",
+      "type": "inheritance|association|aggregation|composition|realization|dependency",
+      "source": "node-id-origen",
+      "target": "node-id-destino",
+      "sourceHandle": "bottom|top|left|right",
+      "targetHandle": "bottom|top|left|right",
+      "data": {
+        "type": "tipo de relación",
+        "label": "etiqueta",
+        "sourceCardinality": "cardinalidad origen",
+        "targetCardinality": "cardinalidad destino"
+      }
+    }
+  ]
+}
+
+IMPORTANTE:
+- Responde SOLO con el JSON válido, SIN markdown
+- Si no puedes leer algo en la imagen, usa valores razonables
+- Asegúrate de que todos los IDs sean únicos
+- Posiciona las clases de forma espaciada (incrementa x e y)
+`;
+
+      // Llamar a OpenAI con visión
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o', // Modelo con capacidad de visión
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: visionPrompt,
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: data.image, // base64 image
+                  detail: 'high', // alta resolución para mejor detalle
+                },
+              },
+            ],
+          },
+        ],
+        temperature: 0.3,
+        max_tokens: 4096,
+        response_format: { type: 'json_object' },
+      });
+
+      const responseText = completion.choices[0]?.message?.content || '{}';
+
+      // Limpiar respuesta
+      let cleanText = responseText
+        .replace(/```json\n?/g, '')
+        .replace(/```\n?/g, '')
+        .trim();
+
+      const diagramJson = JSON.parse(cleanText);
+
+      // Actualizar el diagrama en la base de datos
+      const updatedDiagram = await this.diagramService.update(data.diagramId, {
+        model: diagramJson,
+      });
+
+      // Emitir respuesta exitosa
+      client.emit('diagram-image-processed', {
+        success: true,
+        diagram: diagramJson,
+        message: 'Diagrama generado exitosamente desde la imagen',
+      });
+
+      // Notificar a otros participantes
+      const room = `diagram:${data.diagramId}`;
+      client.to(room).emit('diagram-updated', {
+        id: updatedDiagram.id,
+        model: updatedDiagram.model,
+      });
+
+      console.log(`✅ Imagen procesada exitosamente para: ${data.diagramId}`);
+      console.log(updatedDiagram.model);
+    } catch (error) {
+      console.error('❌ Error procesando imagen:', error);
+      client.emit('diagram-image-processed', {
+        success: false,
+        error: 'Error al procesar la imagen del diagrama',
         message: error.message,
       });
     }
