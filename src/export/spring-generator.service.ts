@@ -40,11 +40,17 @@ interface DiagramModel {
 
 @Injectable()
 export class SpringGeneratorService {
+
+  private sanitizeFieldName(label: string): string {
+  return label
+    .replace(/[^a-zA-Z0-9]/g, '')
+    .replace(/^(.)/, (c) => c.toLowerCase());
+  }
   async generateFromModel(
     model: DiagramModel,
     outputRoot?: string,
   ): Promise<void> {
-    // base package path
+    // path base del package
     const basePackagePath = outputRoot
       ? path.join(outputRoot, 'src', 'main', 'java', 'com', 'example', 'demo')
       : path.join(
@@ -66,21 +72,31 @@ export class SpringGeneratorService {
         if (fs.existsSync(pomSrc)) {
           this.ensureDir(outputRoot);
           fs.copyFileSync(pomSrc, path.join(outputRoot, 'pom.xml'));
+        } else {
+          throw new Error(`Template file not found: ${pomSrc}`);
         }
 
         const mvnw = path.join(templateRoot, 'mvnw');
         if (fs.existsSync(mvnw)) {
           fs.copyFileSync(mvnw, path.join(outputRoot, 'mvnw'));
           fs.chmodSync(path.join(outputRoot, 'mvnw'), 0o755);
+        } else {
+          console.warn(`Maven wrapper not found: ${mvnw}`);
         }
+        
         const mvnwCmd = path.join(templateRoot, 'mvnw.cmd');
         if (fs.existsSync(mvnwCmd)) {
           fs.copyFileSync(mvnwCmd, path.join(outputRoot, 'mvnw.cmd'));
+        } else {
+          console.warn(`Maven wrapper CMD not found: ${mvnwCmd}`);
         }
 
         const mvnFolder = path.join(templateRoot, '.mvn');
-        if (fs.existsSync(mvnFolder))
+        if (fs.existsSync(mvnFolder)) {
           this.copyRecursiveSync(mvnFolder, path.join(outputRoot, '.mvn'));
+        } else {
+          console.warn(`Maven folder not found: ${mvnFolder}`);
+        }
 
         const resourcesSrc = path.join(
           templateRoot,
@@ -94,6 +110,30 @@ export class SpringGeneratorService {
             path.join(outputRoot, 'src', 'main', 'resources'),
           );
         }
+
+        // Generar application.properties con configuración de H2
+        const resourcesDir = path.join(outputRoot, 'src', 'main', 'resources');
+        this.ensureDir(resourcesDir);
+        const appProperties = `# H2 Database Configuration
+spring.datasource.url=jdbc:h2:mem:testdb
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+
+# JPA/Hibernate
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+spring.jpa.hibernate.ddl-auto=create-drop
+spring.jpa.show-sql=true
+
+# H2 Console (opcional, útil para debugging)
+spring.h2.console.enabled=true
+spring.h2.console.path=/h2-console
+`;
+        fs.writeFileSync(
+          path.join(resourcesDir, 'application.properties'),
+          appProperties,
+          'utf8',
+        );
 
         const demoAppSrc = path.join(
           templateRoot,
@@ -120,9 +160,12 @@ export class SpringGeneratorService {
             demoAppSrc,
             path.join(demoAppDestDir, 'DemoApplication.java'),
           );
+        } else {
+          throw new Error(`DemoApplication.java template not found: ${demoAppSrc}`);
         }
       } catch (err) {
-        console.warn('Warning copying template files:', err);
+        console.error('Error copying template files:', err);
+        throw new Error(`Failed to initialize Spring Boot project: ${err.message}`);
       }
     }
 
@@ -272,16 +315,28 @@ export class SpringGeneratorService {
 import jakarta.persistence.Embeddable;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import lombok.AllArgsConstructor;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.io.Serializable;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 @Embeddable
 public class ${idClassName} implements Serializable {
+    @JsonProperty("${sourceLower}Id")
     private Long ${sourceLower}Id;
+    
+    @JsonProperty("id")
     private ${childIdJavaType} id;
+    
+    @JsonCreator
+    public ${idClassName}(
+        @JsonProperty("${sourceLower}Id") Long ${sourceLower}Id,
+        @JsonProperty("id") ${childIdJavaType} id
+    ) {
+        this.${sourceLower}Id = ${sourceLower}Id;
+        this.id = id;
+    }
 }`;
         extraModelFiles.push({ name: `${idClassName}.java`, content: idClass });
 
@@ -294,7 +349,8 @@ public class ${idClassName} implements Serializable {
         );
         relationsMap[targetClass].fields.push(
           `    @EmbeddedId
-    private ${idClassName} id;`,
+            @Setter(AccessLevel.NONE)
+            private ${idClassName} id;`,
         );
         relationsMap[targetClass].fields.push(
           `    @ManyToOne(optional = false)
@@ -324,11 +380,11 @@ public class ${idClassName} implements Serializable {
         relationsMap[sourceClass].imports.add('java.util.List');
         relationsMap[sourceClass].imports.add('jakarta.persistence.OneToMany');
         relationsMap[sourceClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
+          'com.fasterxml.jackson.annotation.JsonIgnore',
         );
         relationsMap[sourceClass].fields.push(
           `    @OneToMany(mappedBy = "${sourceLower}")
-    @JsonManagedReference("${sourceLower}_${assocLower}")
+    @JsonIgnore
     private List<${assocClass}> ${assocLower}s;`,
         );
 
@@ -336,11 +392,11 @@ public class ${idClassName} implements Serializable {
         relationsMap[targetClass].imports.add('java.util.List');
         relationsMap[targetClass].imports.add('jakarta.persistence.OneToMany');
         relationsMap[targetClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
+          'com.fasterxml.jackson.annotation.JsonIgnore',
         );
         relationsMap[targetClass].fields.push(
           `    @OneToMany(mappedBy = "${targetLower}")
-    @JsonManagedReference("${targetLower}_${assocLower}")
+    @JsonIgnore
     private List<${assocClass}> ${assocLower}s;`,
         );
 
@@ -375,65 +431,50 @@ public class ${idClassName} implements Serializable {
         relationsMap[sourceClass].imports.add('jakarta.persistence.ManyToMany');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinTable');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
-        relationsMap[sourceClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
-        );
         relationsMap[sourceClass].fields.push(
           `    @ManyToMany
     @JoinTable(name = "${sourceLower}_${targetLower}", joinColumns = @JoinColumn(name = "${sourceLower}_id"), inverseJoinColumns = @JoinColumn(name = "${targetLower}_id"))
-    @JsonManagedReference("${sourceLower}")
     private List<${targetClass}> ${targetLower}s;`,
         );
 
         relationsMap[targetClass].imports.add('java.util.List');
         relationsMap[targetClass].imports.add('jakarta.persistence.ManyToMany');
         relationsMap[targetClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonBackReference',
+          'com.fasterxml.jackson.annotation.JsonIgnore',
         );
         relationsMap[targetClass].fields.push(
           `    @ManyToMany(mappedBy = "${targetLower}s")
-    @JsonBackReference("${targetLower}")
+    @JsonIgnore
     private List<${sourceClass}> ${sourceLower}s;`,
         );
       } else if (sourceHasManyTargets) {
-        // OneToMany (source) / ManyToOne (target)
+              // OneToMany (source) / ManyToOne (target)
         relationsMap[sourceClass].imports.add('java.util.List');
         relationsMap[sourceClass].imports.add('jakarta.persistence.OneToMany');
         relationsMap[sourceClass].imports.add(
           'com.fasterxml.jackson.annotation.JsonManagedReference',
         );
-
-        // Contar relaciones para evitar conflictos de nombres
-        const relationKey = `${sourceClass}-${targetClass}`;
-        const count =
-          relationsMap[sourceClass].relationshipCount[relationKey] || 0;
-        relationsMap[sourceClass].relationshipCount[relationKey] = count + 1;
-
-        relationsMap[sourceClass].fields.push(
-          `    @OneToMany(mappedBy = "${sourceLower}")
-    @JsonManagedReference("${sourceLower}")
-    private List<${targetClass}> ${targetLower}s;`,
-        );
-
+        
         relationsMap[targetClass].imports.add('jakarta.persistence.ManyToOne');
         relationsMap[targetClass].imports.add('jakarta.persistence.JoinColumn');
         relationsMap[targetClass].imports.add(
           'com.fasterxml.jackson.annotation.JsonBackReference',
         );
+        const fieldName = edge.data?.label
+          ? this.sanitizeFieldName(edge.data.label)
+          : targetLower;
+          relationsMap[sourceClass].fields.push(
+            `    @OneToMany(mappedBy = "${sourceLower}")
+            @JsonManagedReference("${sourceLower}_${fieldName}")
+            private List<${targetClass}> ${fieldName}s;`,
+          );
+          relationsMap[targetClass].fields.push(
+            `    @ManyToOne
+            @JoinColumn(name = "${sourceLower}_id")
+            @JsonBackReference("${sourceLower}_${fieldName}")
+            private ${sourceClass} ${sourceLower};`,
+          );
 
-        // Contar relaciones múltiples hacia la misma clase target
-        const targetRelationKey = `${targetClass}-${sourceClass}`;
-        const targetCount =
-          relationsMap[targetClass].relationshipCount[targetRelationKey] || 0;
-        relationsMap[targetClass].relationshipCount[targetRelationKey] =
-          targetCount + 1;
-
-        relationsMap[targetClass].fields.push(
-          `    @ManyToOne
-    @JoinColumn(name = "${sourceLower}_id")
-    @JsonBackReference("${sourceLower}")
-    private ${sourceClass} ${sourceLower};`,
-        );
       } else if (targetHasManySources) {
         // OneToMany (target) / ManyToOne (source)
         relationsMap[targetClass].imports.add('java.util.List');
@@ -441,60 +482,52 @@ public class ${idClassName} implements Serializable {
         relationsMap[targetClass].imports.add(
           'com.fasterxml.jackson.annotation.JsonManagedReference',
         );
-
-        // Contar relaciones para evitar conflicto
-        const relationKey = `${targetClass}-${sourceClass}`;
-        const count =
-          relationsMap[targetClass].relationshipCount[relationKey] || 0;
-        relationsMap[targetClass].relationshipCount[relationKey] = count + 1;
-
-        relationsMap[targetClass].fields.push(
-          `    @OneToMany(mappedBy = "${targetLower}")
-    @JsonManagedReference("${targetLower}")
-    private List<${sourceClass}> ${sourceLower}s;`,
-        );
-
         relationsMap[sourceClass].imports.add('jakarta.persistence.ManyToOne');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
         relationsMap[sourceClass].imports.add(
           'com.fasterxml.jackson.annotation.JsonBackReference',
         );
 
-        // Contar relaciones múltiples hacia la misma clase source
-        const sourceRelationKey = `${sourceClass}-${targetClass}`;
-        const sourceCount =
-          relationsMap[sourceClass].relationshipCount[sourceRelationKey] || 0;
-        relationsMap[sourceClass].relationshipCount[sourceRelationKey] =
-          sourceCount + 1;
+        const fieldName = edge.data?.label
+          ? this.sanitizeFieldName(edge.data.label)
+          : sourceLower;  // Nota: aquí es sourceLower porque la relación va al revés
+
+        relationsMap[targetClass].fields.push(
+          `    @OneToMany(mappedBy = "${targetLower}")
+          @JsonManagedReference("${targetLower}_${fieldName}")
+          private List<${sourceClass}> ${fieldName}s;`,
+        );
 
         relationsMap[sourceClass].fields.push(
           `    @ManyToOne
-    @JoinColumn(name = "${targetLower}_id")
-    @JsonBackReference("${targetLower}")
-    private ${targetClass} ${targetLower};`,
+          @JoinColumn(name = "${targetLower}_id")
+          @JsonBackReference("${targetLower}_${fieldName}")
+          private ${targetClass} ${targetLower};`,
         );
       } else {
         // One-to-One
+        const fieldName = edge.data?.label 
+          ? this.sanitizeFieldName(edge.data.label) 
+          : targetLower;
+        
+        // Lado propietario (source)
         relationsMap[sourceClass].imports.add('jakarta.persistence.OneToOne');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
-        relationsMap[sourceClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
-        );
+        relationsMap[sourceClass].imports.add('com.fasterxml.jackson.annotation.JsonManagedReference');
         relationsMap[sourceClass].fields.push(
           `    @OneToOne
-    @JoinColumn(name = "${targetLower}_id")
-    @JsonManagedReference("${sourceLower}_${targetLower}")
-    private ${targetClass} ${targetLower};`,
+          @JoinColumn(name = "${fieldName}_id")
+          @JsonManagedReference("${sourceLower}_${fieldName}")
+          private ${targetClass} ${fieldName};`,
         );
 
+        // Lado inverso (target) - USA EL MISMO fieldName
         relationsMap[targetClass].imports.add('jakarta.persistence.OneToOne');
-        relationsMap[targetClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonBackReference',
-        );
+        relationsMap[targetClass].imports.add('com.fasterxml.jackson.annotation.JsonBackReference');
         relationsMap[targetClass].fields.push(
-          `    @OneToOne(mappedBy = "${targetLower}")
-    @JsonBackReference("${sourceLower}_${targetLower}")
-    private ${sourceClass} ${sourceLower};`,
+          `    @OneToOne(mappedBy = "${fieldName}")  // ✅ Usa el nombre del campo en source
+          @JsonBackReference("${sourceLower}_${fieldName}")
+          private ${sourceClass} ${sourceLower};`,
         );
       }
     }
@@ -508,24 +541,27 @@ public class ${idClassName} implements Serializable {
       const java = this.buildEntityWithRelations(className, attributes, rel);
       fs.writeFileSync(path.join(modelDir, `${className}.java`), java, 'utf8');
 
-      const repo = this.buildRepository(className);
+      const repo = this.buildRepository(className, rel);
       fs.writeFileSync(
         path.join(repoDir, `${className}Repository.java`),
         repo,
         'utf8',
       );
 
-      const svc = this.buildService(className);
+      const svc = this.buildService(className, rel);
       fs.writeFileSync(
         path.join(serviceDir, `${className}Service.java`),
         svc,
         'utf8',
       );
 
+      const idType = rel?.compositionChild ? rel.compositionChild.idClassName : 'Long';
       const ctrl = this.buildController(
         className,
         rel?.inheritance?.isChild,
         rel?.inheritance?.parentClass,
+        idType,
+        rel,
       ); // <— con produces/consumes
       fs.writeFileSync(
         path.join(controllerDir, `${className}Controller.java`),
@@ -566,36 +602,136 @@ public class ${idClassName} implements Serializable {
   }
 
   private mapType(attrType: string) {
-    switch ((attrType || '').toLowerCase()) {
-      case 'int':
-      case 'integer':
-        return 'Integer';
-      case 'long':
-        return 'Long';
-      case 'string':
-      default:
-        return 'String';
-    }
+  switch ((attrType || '').toLowerCase()) {
+    case 'int':
+    case 'integer':
+      return 'Integer';
+    
+    case 'long':
+      return 'Long';
+    
+    case 'double':
+      return 'Double';
+    
+    case 'float':
+      return 'Float';
+    
+    case 'boolean':
+    case 'bool':
+      return 'Boolean';
+    
+    case 'date':
+      return 'java.util.Date';
+    
+    case 'localdate':
+      return 'java.time.LocalDate';
+    
+    case 'localdatetime':
+    case 'datetime':
+      return 'java.time.LocalDateTime';
+    
+    case 'bigdecimal':
+    case 'decimal':
+      return 'java.math.BigDecimal';
+    
+    case 'byte':
+      return 'Byte';
+    
+    case 'short':
+      return 'Short';
+    
+    case 'char':
+    case 'character':
+      return 'Character';
+    
+    case 'string':
+    case 'text':
+    default:
+      return 'String';
   }
+}
 
-  private buildRepository(className: string) {
+private buildRepository(className: string, rel?: { 
+  inheritance?: { 
+    isChild: boolean; 
+    parentClass?: string 
+  };
+  compositionChild?: {
+    idClassName: string;
+    parentClass: string;
+    parentLower: string;
+    childIdJavaType: string;
+  };
+}) {
+  const isInheritanceChild = rel?.inheritance?.isChild;
+  const idType = rel?.compositionChild ? rel.compositionChild.idClassName : 'Long';
+  const idImport = rel?.compositionChild 
+    ? `import com.example.demo.model.${rel.compositionChild.idClassName};` 
+    : '';
+  
+  if (isInheritanceChild && rel?.inheritance?.parentClass) {
+    // Repository para clase hija con queries personalizados
     return `package com.example.demo.repository;
 
 import com.example.demo.model.${className};
+${idImport}
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
+import java.util.List;
+import java.util.Optional;
+
+@Repository
+public interface ${className}Repository extends JpaRepository<${className}, ${idType}> {
+    
+    @Query("SELECT e FROM ${className} e WHERE e.id = :id AND TYPE(e) = ${className}")
+    Optional<${className}> findById(@Param("id") ${idType} id);
+    
+    @Query("SELECT e FROM ${className} e WHERE TYPE(e) = ${className}")
+    List<${className}> findAll();
+}
+`;
+  }
+  
+  // Repository normal para clases sin herencia o padres
+  return `package com.example.demo.repository;
+
+import com.example.demo.model.${className};
+${idImport}
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 @Repository
-public interface ${className}Repository extends JpaRepository<${className}, Long> {
+public interface ${className}Repository extends JpaRepository<${className}, ${idType}> {
 }
 `;
-  }
+}
 
-  private buildService(className: string) {
-    return `package com.example.demo.service;
+private buildService(className: string, rel?: { 
+  inheritance?: { 
+    isChild: boolean; 
+    parentClass?: string 
+  };
+  compositionChild?: {
+    idClassName: string;
+    parentClass: string;
+    parentLower: string;
+    childIdJavaType: string;
+  };
+}) {
+  const isInheritanceChild = rel?.inheritance?.isChild;
+  const idType = rel?.compositionChild ? rel.compositionChild.idClassName : 'Long';
+  const idImport = rel?.compositionChild 
+    ? `import com.example.demo.model.${rel.compositionChild.idClassName};` 
+    : '';
+  
+  // Service es igual para todos, porque el Repository ya maneja el filtrado
+  return `package com.example.demo.service;
 
 import com.example.demo.model.${className};
 import com.example.demo.repository.${className}Repository;
+${idImport}
 import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.Optional;
@@ -612,7 +748,7 @@ public class ${className}Service {
         return repository.findAll();
     }
 
-    public Optional<${className}> findById(Long id) {
+    public Optional<${className}> findById(${idType} id) {
         return repository.findById(id);
     }
 
@@ -620,17 +756,21 @@ public class ${className}Service {
         return repository.save(entity);
     }
 
-    public ${className} update(Long id, ${className} entity) {
-        entity.setId(id);
+    public ${className} update(${idType} id, ${className} entity) {
+        // No usar setId() porque puede no existir en clases hijas o composición
+        // JPA maneja el ID automáticamente al hacer save() en una entidad existente
+        if (!repository.existsById(id)) {
+            throw new RuntimeException("Entity not found with id: " + id);
+        }
         return repository.save(entity);
     }
 
-    public void delete(Long id) {
+    public void delete(${idType} id) {
         repository.deleteById(id);
     }
 }
 `;
-  }
+}
 
   // >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
   // CAMBIO IMPORTANTE: controller con produces/consumes explícitos
@@ -639,12 +779,18 @@ public class ${className}Service {
     className: string,
     isInheritanceChild?: boolean,
     parentClass?: string,
+    idType: string = 'Long',
+    rel?: { compositionChild?: { idClassName: string } },
   ) {
     const lower = className.charAt(0).toLowerCase() + className.slice(1);
+    const idImport = rel?.compositionChild 
+      ? `import com.example.demo.model.${rel.compositionChild.idClassName};` 
+      : '';
     const baseController = `package com.example.demo.controller;
 
 import com.example.demo.model.${className};
 import com.example.demo.service.${className}Service;
+${idImport}
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
@@ -666,7 +812,7 @@ public class ${className}Controller {
     }
 
     @GetMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<${className}> get(@PathVariable Long id) {
+    public ResponseEntity<${className}> get(@PathVariable ${idType} id) {
         return service.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
@@ -678,12 +824,12 @@ public class ${className}Controller {
     }
 
     @PutMapping(path = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public ${className} update(@PathVariable Long id, @RequestBody ${className} entity) {
+    public ${className} update(@PathVariable ${idType} id, @RequestBody ${className} entity) {
         return service.update(id, entity);
     }
 
     @DeleteMapping(path = "/{id}")
-    public ResponseEntity<Void> delete(@PathVariable Long id) {
+    public ResponseEntity<Void> delete(@PathVariable ${idType} id) {
         service.delete(id);
         return ResponseEntity.noContent().build();
     }
@@ -708,7 +854,7 @@ public class ${className}Controller {
     }
 
     @GetMapping(path = "/${lower}s/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<${className}> get${className}(@PathVariable Long id) {
+    public ResponseEntity<${className}> get${className}(@PathVariable ${idType} id) {
         return service.findById(id)
                 .filter(v -> v instanceof ${className})
                 .map(v -> (${className}) v)
@@ -747,41 +893,51 @@ public class ${className}Controller {
   ) {
     const fields: string[] = [];
 
-    // id: si es hijo en herencia JOINED, NO declarar id aquí (usa PK del padre)
-    const isInheritanceChild = !!rel?.inheritance?.isChild;
-    if (!isInheritanceChild) {
-      const hasId = attributes?.some((a) => a.name === 'id');
-      if (!hasId) {
-        fields.push(
-          `    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
-    private Long id;`,
-        );
-      } else {
-        fields.push(
-          `    @Id
-    private Long id;`,
-        );
-      }
-    }
-
-    // atributos simples
-    for (const attr of attributes) {
-      if (attr.name === 'id') continue;
-      const t = this.mapType(attr.type);
-      fields.push(`    private ${t} ${attr.name};`);
-    }
-
-    // relaciones
-    const relFields = rel?.fields || [];
-
-    // imports
+    // imports: declarar ANTES de usarlo en el loop
     const imports = new Set<string>([
       'import jakarta.persistence.*;',
       'import lombok.Data;',
       'import com.fasterxml.jackson.annotation.JsonBackReference;',
       'import com.fasterxml.jackson.annotation.JsonManagedReference;',
     ]);
+
+    // id: si es hijo en herencia JOINED, NO declarar id aquí (usa PK del padre)
+    // id: si es hijo en composición, NO declarar id aquí (usa @EmbeddedId)
+    const isInheritanceChild = !!rel?.inheritance?.isChild;
+    const isCompositionChild = !!rel?.compositionChild;
+    
+    if (!isInheritanceChild && !isCompositionChild) {
+      // SIEMPRE usar @GeneratedValue para clases normales y padres de herencia
+      // Solo se omite @GeneratedValue en composiciones con @EmbeddedId
+      fields.push(
+        `    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;`,
+      );
+    }
+
+    // atributos simples (SKIP 'id' porque ya fue manejado arriba o en @EmbeddedId)
+    for (const attr of attributes) {
+      if (attr.name === 'id') continue;
+      const t = this.mapType(attr.type);
+      fields.push(`    private ${t} ${attr.name};`);
+      
+      // Agregar imports para tipos de fecha/tiempo si se detectan
+      const attrTypeLower = (attr.type || '').toLowerCase();
+      if (attrTypeLower === 'date') {
+        imports.add('import java.util.Date;');
+      } else if (attrTypeLower === 'localdate') {
+        imports.add('import java.time.LocalDate;');
+      } else if (attrTypeLower === 'localdatetime' || attrTypeLower === 'datetime') {
+        imports.add('import java.time.LocalDateTime;');
+      } else if (attrTypeLower === 'bigdecimal' || attrTypeLower === 'decimal') {
+        imports.add('import java.math.BigDecimal;');
+      }
+    }
+
+    // relaciones
+    const relFields = rel?.fields || [];
+
     // Importes adicionales para herencia
     if (rel?.inheritance?.isParent) {
       imports.add('import jakarta.persistence.Inheritance;');
@@ -789,6 +945,11 @@ public class ${className}Controller {
       imports.add('import jakarta.persistence.DiscriminatorColumn;');
       imports.add('import jakarta.persistence.DiscriminatorType;');
       imports.add('import jakarta.persistence.DiscriminatorValue;');
+    }
+    // Importes adicionales para composición
+    if (rel?.compositionChild) {
+      imports.add('import lombok.Setter;');
+      imports.add('import lombok.AccessLevel;');
     }
     if (rel?.inheritance?.isChild) {
       imports.add('import jakarta.persistence.DiscriminatorValue;');
