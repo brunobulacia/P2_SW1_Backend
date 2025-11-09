@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import { ZipExportService } from './zip-export.service';
 import { SpringGeneratorService } from './spring-generator.service';
 import { PostmanGeneratorService } from './postman-generator.service';
+import { FlutterGeneratorService } from './flutter-generator.service';
 import { DiagramsService } from 'src/diagrams/diagrams.service';
 import type { Response } from 'express';
 import * as path from 'path';
@@ -23,6 +24,7 @@ export class ExportController {
     private readonly zipExportService: ZipExportService,
     private readonly springGeneratorService: SpringGeneratorService,
     private readonly postmanGeneratorService: PostmanGeneratorService,
+    private readonly flutterGeneratorService: FlutterGeneratorService,
     private readonly diagramsService: DiagramsService,
   ) {}
 
@@ -135,5 +137,76 @@ export class ExportController {
     });
 
     res.json(collections);
+  }
+
+  // generar flutter desde modelo 
+  @Post('generate-flutter')
+  async generateFlutterFromModel(@Body() body: any, @Res() res: Response) {
+    const model = body?.model || body;
+
+    const os = require('os');
+    const tmp = path.join(os.tmpdir(), `flutter-app-${Date.now()}`);
+    this.ensureDir(tmp);
+
+    await this.flutterGeneratorService.generateFromModel(model, tmp);
+
+    const zipFilePath = path.join(
+      os.tmpdir(),
+      `flutter-app-${Date.now()}.zip`,
+    );
+    await this.zipExportService.exportFolderAsZip(tmp, zipFilePath);
+
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="flutter_app.zip"',
+    });
+
+    const zipStream = fs.createReadStream(zipFilePath);
+    zipStream.pipe(res);
+    zipStream.on('end', () => {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        fs.unlink(zipFilePath, () => {});
+      } catch {}
+    });
+  }
+
+  // generar flutter desde diagrama por id
+  @Get('generate-flutter/:id')
+  async generateFlutterFromDiagram(
+    @Param('id') id: string,
+    @Res() res: Response,
+  ) {
+    const diagram = await this.diagramsService.findOne(id).catch(() => null);
+    if (!diagram)
+      throw new NotFoundException(`Diagram with id ${id} not found`);
+
+    const model = (diagram as any).model;
+
+    const os = require('os');
+    const tmp = path.join(os.tmpdir(), `flutter-app-${Date.now()}`);
+    this.ensureDir(tmp);
+
+    await this.flutterGeneratorService.generateFromModel(model, tmp);
+
+    const zipFilePath = path.join(
+      os.tmpdir(),
+      `flutter-app-${Date.now()}.zip`,
+    );
+    await this.zipExportService.exportFolderAsZip(tmp, zipFilePath);
+
+    res.set({
+      'Content-Type': 'application/zip',
+      'Content-Disposition': 'attachment; filename="flutter_app.zip"',
+    });
+
+    const zipStream = fs.createReadStream(zipFilePath);
+    zipStream.pipe(res);
+    zipStream.on('end', () => {
+      try {
+        fs.rmSync(tmp, { recursive: true, force: true });
+        fs.unlink(zipFilePath, () => {});
+      } catch {}
+    });
   }
 }

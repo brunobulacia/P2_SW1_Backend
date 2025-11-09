@@ -431,8 +431,9 @@ public class ${idClassName} implements Serializable {
         relationsMap[sourceClass].imports.add('jakarta.persistence.ManyToMany');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinTable');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
+        relationsMap[sourceClass].imports.add('jakarta.persistence.FetchType');
         relationsMap[sourceClass].fields.push(
-          `    @ManyToMany
+          `    @ManyToMany(fetch = FetchType.EAGER)
     @JoinTable(name = "${sourceLower}_${targetLower}", joinColumns = @JoinColumn(name = "${sourceLower}_id"), inverseJoinColumns = @JoinColumn(name = "${targetLower}_id"))
     private List<${targetClass}> ${targetLower}s;`,
         );
@@ -451,27 +452,29 @@ public class ${idClassName} implements Serializable {
               // OneToMany (source) / ManyToOne (target)
         relationsMap[sourceClass].imports.add('java.util.List');
         relationsMap[sourceClass].imports.add('jakarta.persistence.OneToMany');
+        relationsMap[sourceClass].imports.add('jakarta.persistence.FetchType');
         relationsMap[sourceClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
+          'com.fasterxml.jackson.annotation.JsonIgnoreProperties',
         );
         
         relationsMap[targetClass].imports.add('jakarta.persistence.ManyToOne');
         relationsMap[targetClass].imports.add('jakarta.persistence.JoinColumn');
+        relationsMap[targetClass].imports.add('jakarta.persistence.FetchType');
         relationsMap[targetClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonBackReference',
+          'com.fasterxml.jackson.annotation.JsonIgnoreProperties',
         );
         const fieldName = edge.data?.label
           ? this.sanitizeFieldName(edge.data.label)
           : targetLower;
           relationsMap[sourceClass].fields.push(
-            `    @OneToMany(mappedBy = "${sourceLower}")
-            @JsonManagedReference("${sourceLower}_${fieldName}")
+            `    @OneToMany(mappedBy = "${sourceLower}", fetch = FetchType.EAGER)
+            @JsonIgnoreProperties("${sourceLower}")
             private List<${targetClass}> ${fieldName}s;`,
           );
           relationsMap[targetClass].fields.push(
-            `    @ManyToOne
+            `    @ManyToOne(fetch = FetchType.EAGER)
             @JoinColumn(name = "${sourceLower}_id")
-            @JsonBackReference("${sourceLower}_${fieldName}")
+            @JsonIgnoreProperties("${fieldName}s")
             private ${sourceClass} ${sourceLower};`,
           );
 
@@ -479,13 +482,15 @@ public class ${idClassName} implements Serializable {
         // OneToMany (target) / ManyToOne (source)
         relationsMap[targetClass].imports.add('java.util.List');
         relationsMap[targetClass].imports.add('jakarta.persistence.OneToMany');
+        relationsMap[targetClass].imports.add('jakarta.persistence.FetchType');
         relationsMap[targetClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonManagedReference',
+          'com.fasterxml.jackson.annotation.JsonIgnoreProperties',
         );
         relationsMap[sourceClass].imports.add('jakarta.persistence.ManyToOne');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
+        relationsMap[sourceClass].imports.add('jakarta.persistence.FetchType');
         relationsMap[sourceClass].imports.add(
-          'com.fasterxml.jackson.annotation.JsonBackReference',
+          'com.fasterxml.jackson.annotation.JsonIgnoreProperties',
         );
 
         const fieldName = edge.data?.label
@@ -493,15 +498,15 @@ public class ${idClassName} implements Serializable {
           : sourceLower;  // Nota: aquí es sourceLower porque la relación va al revés
 
         relationsMap[targetClass].fields.push(
-          `    @OneToMany(mappedBy = "${targetLower}")
-          @JsonManagedReference("${targetLower}_${fieldName}")
+          `    @OneToMany(mappedBy = "${targetLower}", fetch = FetchType.EAGER)
+          @JsonIgnoreProperties("${targetLower}")
           private List<${sourceClass}> ${fieldName}s;`,
         );
 
         relationsMap[sourceClass].fields.push(
-          `    @ManyToOne
+          `    @ManyToOne(fetch = FetchType.EAGER)
           @JoinColumn(name = "${targetLower}_id")
-          @JsonBackReference("${targetLower}_${fieldName}")
+          @JsonIgnoreProperties("${fieldName}s")
           private ${targetClass} ${targetLower};`,
         );
       } else {
@@ -513,20 +518,21 @@ public class ${idClassName} implements Serializable {
         // Lado propietario (source)
         relationsMap[sourceClass].imports.add('jakarta.persistence.OneToOne');
         relationsMap[sourceClass].imports.add('jakarta.persistence.JoinColumn');
-        relationsMap[sourceClass].imports.add('com.fasterxml.jackson.annotation.JsonManagedReference');
+        relationsMap[sourceClass].imports.add('jakarta.persistence.FetchType');
+        relationsMap[sourceClass].imports.add('com.fasterxml.jackson.annotation.JsonIgnoreProperties');
         relationsMap[sourceClass].fields.push(
-          `    @OneToOne
+          `    @OneToOne(fetch = FetchType.EAGER)
           @JoinColumn(name = "${fieldName}_id")
-          @JsonManagedReference("${sourceLower}_${fieldName}")
+          @JsonIgnoreProperties("${sourceLower}")
           private ${targetClass} ${fieldName};`,
         );
 
         // Lado inverso (target) - USA EL MISMO fieldName
         relationsMap[targetClass].imports.add('jakarta.persistence.OneToOne');
-        relationsMap[targetClass].imports.add('com.fasterxml.jackson.annotation.JsonBackReference');
+        relationsMap[targetClass].imports.add('com.fasterxml.jackson.annotation.JsonIgnoreProperties');
         relationsMap[targetClass].fields.push(
           `    @OneToOne(mappedBy = "${fieldName}")  // ✅ Usa el nombre del campo en source
-          @JsonBackReference("${sourceLower}_${fieldName}")
+          @JsonIgnoreProperties("${fieldName}")
           private ${sourceClass} ${sourceLower};`,
         );
       }
@@ -757,11 +763,32 @@ public class ${className}Service {
     }
 
     public ${className} update(${idType} id, ${className} entity) {
-        // No usar setId() porque puede no existir en clases hijas o composición
-        // JPA maneja el ID automáticamente al hacer save() en una entidad existente
         if (!repository.existsById(id)) {
             throw new RuntimeException("Entity not found with id: " + id);
         }
+        // Para clases normales, establecer el ID manualmente
+        ${rel?.compositionChild ? `// Composición: el ID compuesto ya viene en entity.id` : `// Establecer el ID para que JPA haga UPDATE en lugar de INSERT
+        try {
+            // Buscar campo 'id' en la clase actual Y en superclases (para herencia)
+            java.lang.reflect.Field idField = null;
+            Class<?> currentClass = ${className}.class;
+            while (currentClass != null && idField == null) {
+                try {
+                    idField = currentClass.getDeclaredField("id");
+                } catch (NoSuchFieldException e) {
+                    currentClass = currentClass.getSuperclass();
+                    if (currentClass == Object.class) {
+                        currentClass = null;
+                    }
+                }
+            }
+            if (idField != null) {
+                idField.setAccessible(true);
+                idField.set(entity, id);
+            }
+        } catch (Exception e) {
+            // Si falla reflexión, intentar con método setter si existe
+        }`}
         return repository.save(entity);
     }
 
@@ -795,12 +822,18 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 
 @RestController
 @RequestMapping("/api/${lower}")
 public class ${className}Controller {
     private final ${className}Service service;
+    
+    @PersistenceContext
+    private EntityManager entityManager;
 
     public ${className}Controller(${className}Service service) {
         this.service = service;
@@ -811,28 +844,314 @@ public class ${className}Controller {
         return service.findAll();
     }
 
-    @GetMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    ${rel?.compositionChild 
+      ? `@GetMapping(path = "/{idStr}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<${className}> get(@PathVariable String idStr) {
+        // Parse composite ID: "1,2" → ItemPedidoId(id=1, pedidoId=2)
+        String[] parts = idStr.split(",");
+        ${idType} id = new ${idType}();
+        try {
+            java.lang.reflect.Field[] fields = ${idType}.class.getDeclaredFields();
+            for (int i = 0; i < parts.length && i < fields.length; i++) {
+                fields[i].setAccessible(true);
+                Class<?> fieldType = fields[i].getType();
+                if (fieldType == Long.class || fieldType == long.class) {
+                    fields[i].set(id, Long.parseLong(parts[i]));
+                } else if (fieldType == Integer.class || fieldType == int.class) {
+                    fields[i].set(id, Integer.parseInt(parts[i]));
+                } else {
+                    fields[i].set(id, parts[i]);
+                }
+            }
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().build();
+        }
+        return service.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
+    }`
+      : `@GetMapping(path = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<${className}> get(@PathVariable ${idType} id) {
         return service.findById(id)
                 .map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
-    }
+    }`}
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public ${className} create(@RequestBody ${className} entity) {
+    public ${className} create(@RequestBody Map<String, Object> payload) throws Exception {
+        ${className} entity = new ${className}();
+        
+        // Usar reflexión para setear campos simples y resolver referencias OneToOne/ManyToOne
+        for (Map.Entry<String, Object> entry : payload.entrySet()) {
+            String fieldName = entry.getKey();
+            Object value = entry.getValue();
+            
+            try {
+                // Buscar campo en la clase actual Y en superclases (para herencia)
+                java.lang.reflect.Field field = null;
+                Class<?> currentClass = ${className}.class;
+                while (currentClass != null && field == null) {
+                    try {
+                        field = currentClass.getDeclaredField(fieldName);
+                    } catch (NoSuchFieldException e) {
+                        // Si no se encuentra, buscar en la superclase
+                        // PERO solo si no es Object (termina el loop)
+                        currentClass = currentClass.getSuperclass();
+                        if (currentClass == Object.class) {
+                            currentClass = null;
+                        }
+                    }
+                }
+                
+                if (field == null) {
+                    continue; // Campo no existe, ignorar
+                }
+                
+                field.setAccessible(true);
+                Class<?> fieldType = field.getType();
+                
+                // SKIP: Si es un campo "id" en una entidad con @EmbeddedId (composición)
+                // El ID compuesto se genera automáticamente, no debe setearse manualmente
+                if (fieldName.equals("id") && field.getAnnotation(jakarta.persistence.EmbeddedId.class) != null) {
+                    continue;
+                }
+                
+                // Si es una List (ManyToMany o OneToMany), procesar como colección
+                if (value instanceof java.util.List && java.util.List.class.isAssignableFrom(fieldType)) {
+                    java.util.List<?> listValue = (java.util.List<?>) value;
+                    java.util.List<Object> entities = new java.util.ArrayList<>();
+                    
+                    // Obtener el tipo genérico de la lista
+                    java.lang.reflect.ParameterizedType paramType = (java.lang.reflect.ParameterizedType) field.getGenericType();
+                    Class<?> elementType = (Class<?>) paramType.getActualTypeArguments()[0];
+                    
+                    for (Object item : listValue) {
+                        if (item instanceof Map) {
+                            Map<String, Object> itemMap = (Map<String, Object>) item;
+                            if (itemMap.containsKey("id")) {
+                                Long id = itemMap.get("id") instanceof Number 
+                                    ? ((Number) itemMap.get("id")).longValue() 
+                                    : Long.parseLong(itemMap.get("id").toString());
+                                Object relatedEntity = entityManager.getReference(elementType, id);
+                                entities.add(relatedEntity);
+                            }
+                        }
+                    }
+                    field.set(entity, entities);
+                }
+                // Si es una relación (viene como Map con {id: X}), resolver la referencia
+                else if (value instanceof Map) {
+                    Map<String, Object> refMap = (Map<String, Object>) value;
+                    if (refMap.containsKey("id")) {
+                        Object refId = refMap.get("id");
+                        
+                        try {
+                            // Usar EntityManager.getReference() para crear proxy lazy
+                            // Esto NO consulta la BD, solo crea una referencia
+                            Long id = refId instanceof Number ? ((Number) refId).longValue() : Long.parseLong(refId.toString());
+                            Object relatedEntity = entityManager.getReference(fieldType, id);
+                            field.set(entity, relatedEntity);
+                        } catch (Exception e) {
+                            // Si falla, ignorar
+                        }
+                    }
+                } else {
+                    // Campo simple, setear directamente
+                    if (value != null) {
+                        if (fieldType == Long.class || fieldType == long.class) {
+                            field.set(entity, ((Number) value).longValue());
+                        } else if (fieldType == Integer.class || fieldType == int.class) {
+                            field.set(entity, ((Number) value).intValue());
+                        } else if (fieldType == Double.class || fieldType == double.class) {
+                            field.set(entity, ((Number) value).doubleValue());
+                        } else if (fieldType == Float.class || fieldType == float.class) {
+                            field.set(entity, ((Number) value).floatValue());
+                        } else if (fieldType == java.math.BigDecimal.class) {
+                            // BigDecimal: convertir desde Number
+                            if (value instanceof Number) {
+                                field.set(entity, new java.math.BigDecimal(value.toString()));
+                            } else if (value instanceof String) {
+                                field.set(entity, new java.math.BigDecimal((String) value));
+                            }
+                        } else if (fieldType == Boolean.class || fieldType == boolean.class) {
+                            field.set(entity, (Boolean) value);
+                        } else if (fieldType == String.class) {
+                            field.set(entity, value.toString());
+                        } else if (fieldType == java.util.Date.class && value instanceof String) {
+                            // Date: parsear desde String ISO "2025-11-09T00:00:00.000Z"
+                            String dateStr = (String) value;
+                            try {
+                                // Intentar parsear con SimpleDateFormat
+                                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS");
+                                field.set(entity, sdf.parse(dateStr));
+                            } catch (Exception e) {
+                                // Si falla, intentar solo fecha
+                                try {
+                                    if (dateStr.contains("T")) {
+                                        dateStr = dateStr.substring(0, dateStr.indexOf("T"));
+                                    }
+                                    java.text.SimpleDateFormat sdf2 = new java.text.SimpleDateFormat("yyyy-MM-dd");
+                                    field.set(entity, sdf2.parse(dateStr));
+                                } catch (Exception e2) {
+                                    // Ignorar si no se puede parsear
+                                }
+                            }
+                        } else if (fieldType == java.time.LocalDate.class && value instanceof String) {
+                            // LocalDate: aceptar "2025-11-09" o "2025-11-09T00:00:00.000"
+                            String dateStr = (String) value;
+                            if (dateStr.contains("T")) {
+                                // Tiene hora, extraer solo la fecha
+                                dateStr = dateStr.substring(0, dateStr.indexOf("T"));
+                            }
+                            field.set(entity, java.time.LocalDate.parse(dateStr));
+                        } else if (fieldType == java.time.LocalDateTime.class && value instanceof String) {
+                            field.set(entity, java.time.LocalDateTime.parse((String) value));
+                        } else {
+                            field.set(entity, value);
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // Ignorar errores de reflexión
+            }
+        }
+        
+        // POST-PROCESAMIENTO para entidades con @EmbeddedId (composiciones)
+        // Hibernate necesita que el @EmbeddedId esté completo antes de persist()
+        try {
+            java.lang.reflect.Field[] allFields = ${className}.class.getDeclaredFields();
+            for (java.lang.reflect.Field f : allFields) {
+                if (f.getAnnotation(jakarta.persistence.EmbeddedId.class) != null) {
+                    f.setAccessible(true);
+                    Object embeddedId = f.get(entity);
+                    
+                    // Si el @EmbeddedId es null, instanciarlo
+                    if (embeddedId == null) {
+                        Class<?> embeddedIdType = f.getType();
+                        embeddedId = embeddedIdType.getDeclaredConstructor().newInstance();
+                        f.set(entity, embeddedId);
+                    }
+                    
+                    // Buscar campo con @MapsId para poblar el ID compuesto
+                    for (java.lang.reflect.Field relField : allFields) {
+                        jakarta.persistence.MapsId mapsId = relField.getAnnotation(jakarta.persistence.MapsId.class);
+                        if (mapsId != null) {
+                            relField.setAccessible(true);
+                            Object relatedEntity = relField.get(entity);
+                            
+                            if (relatedEntity != null) {
+                                // Obtener el ID de la entidad relacionada
+                                java.lang.reflect.Field relIdField = null;
+                                Class<?> relClass = relatedEntity.getClass();
+                                while (relClass != null && relIdField == null) {
+                                    try {
+                                        relIdField = relClass.getDeclaredField("id");
+                                    } catch (NoSuchFieldException e) {
+                                        relClass = relClass.getSuperclass();
+                                        if (relClass == Object.class) relClass = null;
+                                    }
+                                }
+                                
+                                if (relIdField != null) {
+                                    relIdField.setAccessible(true);
+                                    Object relId = relIdField.get(relatedEntity);
+                                    
+                                    // Setear el campo del @EmbeddedId con el nombre del @MapsId
+                                    String fieldNameInId = mapsId.value();
+                                    java.lang.reflect.Field idComponentField = embeddedId.getClass().getDeclaredField(fieldNameInId);
+                                    idComponentField.setAccessible(true);
+                                    idComponentField.set(embeddedId, relId);
+                                    
+                                    // Generar el campo 'id' del @EmbeddedId (auto-increment manual)
+                                    java.lang.reflect.Field seqField = embeddedId.getClass().getDeclaredField("id");
+                                    seqField.setAccessible(true);
+                                    
+                                    // Buscar el máximo id existente para este parent
+                                    Long maxId = 0L;
+                                    try {
+                                        jakarta.persistence.Query q = entityManager.createQuery(
+                                            "SELECT MAX(e.id.id) FROM " + entity.getClass().getSimpleName() + " e WHERE e.id." + fieldNameInId + " = :parentId"
+                                        );
+                                        q.setParameter("parentId", relId);
+                                        Object result = q.getSingleResult();
+                                        if (result != null) {
+                                            maxId = ((Number) result).longValue();
+                                        }
+                                    } catch (Exception ex) {
+                                        // Si falla la query, usar 0
+                                    }
+                                    
+                                    seqField.set(embeddedId, maxId + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Ignorar si no hay @EmbeddedId
+        }
+        
         return service.create(entity);
     }
 
-    @PutMapping(path = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    ${rel?.compositionChild
+      ? `@PutMapping(path = "/{idStr}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public ${className} update(@PathVariable String idStr, @RequestBody ${className} entity) {
+        String[] parts = idStr.split(",");
+        ${idType} id = new ${idType}();
+        try {
+            java.lang.reflect.Field[] fields = ${idType}.class.getDeclaredFields();
+            for (int i = 0; i < parts.length && i < fields.length; i++) {
+                fields[i].setAccessible(true);
+                Class<?> fieldType = fields[i].getType();
+                if (fieldType == Long.class || fieldType == long.class) {
+                    fields[i].set(id, Long.parseLong(parts[i]));
+                } else if (fieldType == Integer.class || fieldType == int.class) {
+                    fields[i].set(id, Integer.parseInt(parts[i]));
+                } else {
+                    fields[i].set(id, parts[i]);
+                }
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Invalid composite ID format");
+        }
+        return service.update(id, entity);
+    }`
+      : `@PutMapping(path = "/{id}", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
     public ${className} update(@PathVariable ${idType} id, @RequestBody ${className} entity) {
         return service.update(id, entity);
-    }
+    }`}
 
-    @DeleteMapping(path = "/{id}")
+    ${rel?.compositionChild
+      ? `@DeleteMapping(path = "/{idStr}")
+    public ResponseEntity<Void> delete(@PathVariable String idStr) {
+        String[] parts = idStr.split(",");
+        ${idType} id = new ${idType}();
+        try {
+            java.lang.reflect.Field[] fields = ${idType}.class.getDeclaredFields();
+            for (int i = 0; i < parts.length && i < fields.length; i++) {
+                fields[i].setAccessible(true);
+                Class<?> fieldType = fields[i].getType();
+                if (fieldType == Long.class || fieldType == long.class) {
+                    fields[i].set(id, Long.parseLong(parts[i]));
+                } else if (fieldType == Integer.class || fieldType == int.class) {
+                    fields[i].set(id, Integer.parseInt(parts[i]));
+                } else {
+                    fields[i].set(id, parts[i]);
+                }
+            }
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().build();
+        }
+        service.delete(id);
+        return ResponseEntity.noContent().build();
+    }`
+      : `@DeleteMapping(path = "/{id}")
     public ResponseEntity<Void> delete(@PathVariable ${idType} id) {
         service.delete(id);
         return ResponseEntity.noContent().build();
-    }
+    }`}
 }`;
 
     // Si es clase hija, agregar endpoints específicos que filtren por tipo
@@ -990,11 +1309,13 @@ public class ${className}Controller {
 ${Array.from(imports).join('\n')}
 import lombok.NoArgsConstructor;
 import lombok.AllArgsConstructor;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 @Entity
+@JsonIgnoreProperties({"hibernateLazyInitializer", "handler"})
 ${classAnnotations.join('\n')}
 public class ${className}${extendsClause} {
 ${fields.join('\n\n')}
