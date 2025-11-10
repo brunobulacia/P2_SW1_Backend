@@ -4,7 +4,7 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors({
-    origin: ['https://dclassmigrator.vercel.app'], // URL específica de tu frontend
+    origin: ['https://dclassmigrator.vercel.app', 'http://localhost:3000'], // URL específica de tu frontend
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     preflightContinue: false,
     optionsSuccessStatus: 204,
