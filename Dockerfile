@@ -1,4 +1,5 @@
-FROM node:22-alpine
+# Stage 1: Build
+FROM node:22-alpine AS builder
 
 WORKDIR /usr/src/app
 
@@ -6,7 +7,7 @@ WORKDIR /usr/src/app
 COPY package*.json ./
 COPY prisma ./prisma
 
-# Instalar dependencias
+# Instalar todas las dependencias (incluyendo dev)
 RUN npm ci
 
 # Copiar código fuente
@@ -18,8 +19,16 @@ RUN npx prisma generate
 # Compilar aplicación
 RUN npm run build
 
-# Limpiar devDependencies para reducir tamaño
-RUN npm prune --production
+# Stage 2: Production
+FROM node:22-alpine AS production
+
+WORKDIR /usr/src/app
+
+# Copiar archivos necesarios desde builder
+COPY --from=builder /usr/src/app/package*.json ./
+COPY --from=builder /usr/src/app/prisma ./prisma
+COPY --from=builder /usr/src/app/dist ./dist
+COPY --from=builder /usr/src/app/node_modules ./node_modules
 
 # Exponer puerto (Railway usa variable PORT)
 EXPOSE ${PORT:-4000}
