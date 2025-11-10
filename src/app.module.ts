@@ -8,9 +8,11 @@ import { DiagramMembersModule } from './diagram_members/diagram_members.module';
 import { DiagramInvitesModule } from './diagram_invites/diagram_invites.module';
 import { DiagramSocketModule } from './diagram_socket/diagram-socket.module';
 import { ExportModule } from './export/export.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
+    HealthModule,
     UsersModule,
     AuthModule,
     DiagramsModule,
