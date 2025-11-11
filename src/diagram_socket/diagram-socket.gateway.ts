@@ -180,16 +180,56 @@ export class DiagramSocketGateway
 
     // Detectar si la solicitud es para modificar un diagrama
     const prompt = (data.prompt || '').toLowerCase();
+    console.log('🔍 Prompt normalizado:', prompt);
     const isDiagramModification =
+      // Agregar elementos - más variaciones
       (prompt.includes('agregar') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('agrega') &&
         (prompt.includes('atributo') || prompt.includes('clase'))) ||
       (prompt.includes('añadir') &&
         (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('añade') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
       (prompt.includes('incluir') &&
         (prompt.includes('atributo') || prompt.includes('clase'))) ||
-      (prompt.includes('modificar') && prompt.includes('clase')) ||
+      (prompt.includes('incluye') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
       (prompt.includes('crear') && prompt.includes('clase')) ||
+      // Eliminar elementos - más variaciones
+      (prompt.includes('eliminar') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('elimina') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('quitar') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('quita') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('remover') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('remueve') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('borrar') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('borra') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      // Modificar elementos
+      (prompt.includes('modificar') && prompt.includes('clase')) ||
+      // Casos específicos
       (prompt.includes('semestre') && prompt.includes('aula'));
+
+    // Debug: mostrar qué condiciones se cumplen
+    console.log('🔍 Condiciones de detección:');
+    console.log(
+      '  - Contiene "elimina" + "atributo":',
+      prompt.includes('elimina') && prompt.includes('atributo'),
+    );
+    console.log(
+      '  - Contiene "agrega" + "atributo":',
+      prompt.includes('agrega') && prompt.includes('atributo'),
+    );
+    console.log('  - Contiene "clase":', prompt.includes('clase'));
+    console.log('  - isDiagramModification:', isDiagramModification);
 
     if (isDiagramModification) {
       console.log(
@@ -333,13 +373,16 @@ Si el diagrama actual tiene una clase "Aula" con atributos [nombre, capacidad], 
 
 ANÁLISIS DEL PEDIDO:
 - Si menciona "agregar atributo X a clase Y": modifica la clase Y agregando el atributo X
+- Si menciona "eliminar/quitar/remover/borrar atributo X de clase Y": modifica la clase Y eliminando el atributo X
 - Si menciona "crear clase nueva": agrega una nueva clase
+- Si menciona "eliminar clase Y": elimina la clase Y del diagrama
 - Si menciona "agregar relación": agrega una nueva relación
 
 Tu respuesta DEBE incluir:
-- TODOS los nodos existentes (modificados SOLO si se solicita agregar atributos a clases específicas)
+- TODOS los nodos existentes (modificados si se agregan/eliminan atributos a clases específicas)
 - TODOS los edges existentes (sin modificar a menos que se solicite)  
 - Los nuevos nodos solicitados (si aplica)
+- Eliminar nodos o atributos SOLO si se solicita explícitamente
 - Nuevos edges solo si son necesarios
 `
     : ''
@@ -461,18 +504,23 @@ ${
    - Agrega el nuevo atributo al array "attributes" existente
    - Genera ID único para el nuevo atributo: "attr-[timestamp]"
    - Mantén todos los atributos existentes
-3. Para NUEVAS CLASES:
+3. Para ELIMINAR ATRIBUTOS de clase existente:
+   - Copia la clase exactamente (mismo id, data.label, position, type)
+   - Elimina SOLO el atributo específico del array "attributes"
+   - Mantén todos los demás atributos intactos
+   - NO elimines otros atributos
+4. Para NUEVAS CLASES:
    - Copia exactamente todos los nodos existentes
    - Agrega las nuevas clases con IDs únicos
-4. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
-5. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
-6. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
-7. Responde con el JSON completo: nodos (existentes modificados + nuevos) + edges existentes + edges nuevos (si aplica)
+5. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
+6. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
+7. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
+8. Responde con el JSON completo: nodos (existentes modificados + nuevos) + edges existentes + edges nuevos (si aplica)
 
-EJEMPLO para "agregar atributo semestre a clase Aula":
-- Busca el nodo con data.label = "Aula"
-- Agrega {"id": "attr-[timestamp]", "name": "semestre", "type": "String", "visibility": "private"} al array attributes
-- Mantén todo lo demás igual (id del nodo, position, otros atributos, etc.)
+EJEMPLOS ESPECÍFICOS:
+- "agregar atributo semestre a clase Aula": Busca Aula → Agrega semestre al array attributes
+- "eliminar atributo codigo de clase Materia": Busca Materia → Elimina SOLO el atributo "codigo" del array attributes
+- "quitar atributo piso de Aula": Busca Aula → Elimina SOLO el atributo "piso"
 `
     : `
 1. Genera IDs únicos usando timestamps
@@ -508,10 +556,12 @@ IMPORTANTE: Responde SOLO con el JSON del diagrama, SIN explicaciones, SIN markd
 
 CASOS ESPECÍFICOS DE MODIFICACIÓN:
 1. "Agregar atributo X a clase Y": Modifica la clase Y agregando el atributo X, mantén todo lo demás
-2. "Crear nueva clase Z": Agrega clase Z sin modificar las existentes  
-3. "Agregar relación entre A y B": Agrega edge entre A y B, mantén clases y edges existentes
-4. "Modificar atributo X de clase Y": Cambia solo ese atributo específico
-5. NO crear diagrama desde cero - SIEMPRE partir del diagrama existente y aplicar solo las modificaciones solicitadas
+2. "Eliminar atributo X de clase Y": Modifica la clase Y eliminando SOLO el atributo X, mantén todos los demás atributos
+3. "Quitar atributo X de clase Y": Modifica la clase Y eliminando SOLO el atributo X, mantén todos los demás atributos
+4. "Crear nueva clase Z": Agrega clase Z sin modificar las existentes  
+5. "Agregar relación entre A y B": Agrega edge entre A y B, mantén clases y edges existentes
+6. "Modificar atributo X de clase Y": Cambia solo ese atributo específico
+7. NO crear diagrama desde cero - SIEMPRE partir del diagrama existente y aplicar solo las modificaciones solicitadas
 
 `;
 
@@ -531,6 +581,8 @@ CASOS ESPECÍFICOS DE MODIFICACIÓN:
 🎯 ANÁLISIS DE LA SOLICITUD: "${data.prompt}"
 
 PASO A PASO PARA MODIFICAR CLASE EXISTENTE:
+
+PARA AGREGAR ATRIBUTO:
 1. Identifica si se menciona "agregar", "añadir" o "incluir" un atributo
 2. Identifica el nombre de la clase a modificar
 3. Busca en el diagrama actual el nodo con data.label igual al nombre de la clase
@@ -541,10 +593,22 @@ PASO A PASO PARA MODIFICAR CLASE EXISTENTE:
    - "visibility": "private" (por defecto)
 5. Mantén TODOS los otros atributos y propiedades de la clase intactos
 
-EJEMPLO PRÁCTICO:
+PARA ELIMINAR ATRIBUTO:
+1. Identifica si se menciona "eliminar", "quitar", "remover" o "borrar" un atributo
+2. Identifica el nombre de la clase y el atributo a eliminar
+3. Busca en el diagrama actual el nodo con data.label igual al nombre de la clase
+4. En el array "attributes" de esa clase, ELIMINA SOLO el atributo con el nombre especificado
+5. Mantén TODOS los otros atributos y propiedades de la clase intactos
+
+EJEMPLOS PRÁCTICOS:
 Si solicitud = "agregar atributo semestre a clase Aula"
 → Buscar nodo con data.label = "Aula"
 → En su attributes array, agregar: {"id": "attr-1731340727000", "name": "semestre", "type": "String", "visibility": "private"}
+→ Mantener todos los otros atributos existentes
+
+Si solicitud = "eliminar atributo codigo de clase Materia"
+→ Buscar nodo con data.label = "Materia"  
+→ En su attributes array, ELIMINAR el atributo que tenga "name": "codigo"
 → Mantener todos los otros atributos existentes
 
 FORMATO DE RESPUESTA OBLIGATORIO:
