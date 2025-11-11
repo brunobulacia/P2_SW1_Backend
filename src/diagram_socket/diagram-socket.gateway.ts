@@ -215,6 +215,26 @@ export class DiagramSocketGateway
         (prompt.includes('atributo') || prompt.includes('clase'))) ||
       // Modificar elementos
       (prompt.includes('modificar') && prompt.includes('clase')) ||
+      // Modificar relaciones
+      (prompt.includes('modificar') && prompt.includes('relación')) ||
+      (prompt.includes('modifica') && prompt.includes('relación')) ||
+      (prompt.includes('cambiar') && prompt.includes('relación')) ||
+      (prompt.includes('cambia') && prompt.includes('relación')) ||
+      (prompt.includes('modificar') && prompt.includes('relacion')) ||
+      (prompt.includes('modifica') && prompt.includes('relacion')) ||
+      (prompt.includes('cambiar') && prompt.includes('relacion')) ||
+      (prompt.includes('cambia') && prompt.includes('relacion')) ||
+      // Tipos de relaciones específicos
+      prompt.includes('composición') ||
+      prompt.includes('composicion') ||
+      prompt.includes('agregación') ||
+      prompt.includes('agregacion') ||
+      prompt.includes('herencia') ||
+      prompt.includes('asociación') ||
+      prompt.includes('asociacion') ||
+      prompt.includes('dependencia') ||
+      prompt.includes('realización') ||
+      prompt.includes('realizacion') ||
       // Casos específicos
       (prompt.includes('semestre') && prompt.includes('aula'));
 
@@ -229,6 +249,15 @@ export class DiagramSocketGateway
       prompt.includes('agrega') && prompt.includes('atributo'),
     );
     console.log('  - Contiene "clase":', prompt.includes('clase'));
+    console.log(
+      '  - Contiene "modifica" + "relación":',
+      prompt.includes('modifica') &&
+        (prompt.includes('relación') || prompt.includes('relacion')),
+    );
+    console.log(
+      '  - Contiene "composición":',
+      prompt.includes('composición') || prompt.includes('composicion'),
+    );
     console.log('  - isDiagramModification:', isDiagramModification);
 
     if (isDiagramModification) {
@@ -377,6 +406,8 @@ ANÁLISIS DEL PEDIDO:
 - Si menciona "crear clase nueva": agrega una nueva clase
 - Si menciona "eliminar clase Y": elimina la clase Y del diagrama
 - Si menciona "agregar relación": agrega una nueva relación
+- Si menciona "modificar relación entre clase A y clase B": cambia el tipo de relación entre A y B
+- Si menciona tipos de relación (composición, agregación, herencia, asociación, dependencia): aplica ese tipo de relación
 
 Tu respuesta DEBE incluir:
 - TODOS los nodos existentes (modificados si se agregan/eliminan atributos a clases específicas)
@@ -512,15 +543,22 @@ ${
 4. Para NUEVAS CLASES:
    - Copia exactamente todos los nodos existentes
    - Agrega las nuevas clases con IDs únicos
-5. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
-6. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
-7. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
-8. Responde con el JSON completo: nodos (existentes modificados + nuevos) + edges existentes + edges nuevos (si aplica)
+5. Para MODIFICAR RELACIONES entre clases existentes:
+   - Busca el edge que conecta las dos clases específicas
+   - Cambia SOLO el tipo de relación en data.type y type del edge
+   - Mantén exactamente el mismo id, source, target, sourceHandle, targetHandle
+   - Actualiza data.type y type a: "inheritance", "association", "aggregation", "composition", "realization", "dependency"
+   - Mantén todos los demás edges sin cambios
+6. COPIA EXACTAMENTE todos los nodos existentes (a menos que se modifiquen atributos)
+7. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
+8. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
+9. Responde con el JSON completo: nodos (existentes modificados + nuevos) + edges (existentes modificados + nuevos si aplica)
 
 EJEMPLOS ESPECÍFICOS:
 - "agregar atributo semestre a clase Aula": Busca Aula → Agrega semestre al array attributes
 - "eliminar atributo codigo de clase Materia": Busca Materia → Elimina SOLO el atributo "codigo" del array attributes
 - "quitar atributo piso de Aula": Busca Aula → Elimina SOLO el atributo "piso"
+- "modificar relación entre Materia y MateriaCarrera a composición": Busca edge entre Materia-MateriaCarrera → Cambia type y data.type a "composition"
 `
     : `
 1. Genera IDs únicos usando timestamps
@@ -600,6 +638,14 @@ PARA ELIMINAR ATRIBUTO:
 4. En el array "attributes" de esa clase, ELIMINA SOLO el atributo con el nombre especificado
 5. Mantén TODOS los otros atributos y propiedades de la clase intactos
 
+PARA MODIFICAR RELACIÓN:
+1. Identifica si se menciona "modificar", "cambiar", "convertir" una relación
+2. Identifica las clases conectadas por la relación (origen y destino)  
+3. Identifica el nuevo tipo de relación solicitado (composición, agregación, herencia, asociación, dependencia, realización)
+4. Busca en el array "edges" la relación entre esas dos clases usando source y target
+5. Modifica SOLO el campo "data.edgeType" con el nuevo tipo de relación
+6. Mantén TODOS los otros campos del edge intactos (id, source, target, animated, label, markerEnd, etc.)
+
 EJEMPLOS PRÁCTICOS:
 Si solicitud = "agregar atributo semestre a clase Aula"
 → Buscar nodo con data.label = "Aula"
@@ -610,6 +656,11 @@ Si solicitud = "eliminar atributo codigo de clase Materia"
 → Buscar nodo con data.label = "Materia"  
 → En su attributes array, ELIMINAR el atributo que tenga "name": "codigo"
 → Mantener todos los otros atributos existentes
+
+Si solicitud = "modifica la relación entre clase Materia y MateriaCarrera a composición"
+→ Buscar en edges el que tiene source apuntando a nodo "Materia" y target apuntando a nodo "MateriaCarrera"
+→ Cambiar su data.edgeType de "association" a "composition"
+→ Mantener todos los otros campos del edge (id, source, target, animated, label, markerEnd, etc.)
 
 FORMATO DE RESPUESTA OBLIGATORIO:
 {
