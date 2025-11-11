@@ -175,6 +175,68 @@ export class DiagramSocketGateway
     @MessageBody() data: any,
     @ConnectedSocket() client: Socket,
   ): Promise<void> {
+    console.log('🤖 GENERATE AGENT REQUEST:');
+    console.log('Prompt:', data.prompt);
+
+    // Detectar si la solicitud es para modificar un diagrama
+    const prompt = (data.prompt || '').toLowerCase();
+    const isDiagramModification =
+      (prompt.includes('agregar') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('añadir') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('incluir') &&
+        (prompt.includes('atributo') || prompt.includes('clase'))) ||
+      (prompt.includes('modificar') && prompt.includes('clase')) ||
+      (prompt.includes('crear') && prompt.includes('clase')) ||
+      (prompt.includes('semestre') && prompt.includes('aula'));
+
+    if (isDiagramModification) {
+      console.log(
+        '🎯 DETECTADA SOLICITUD DE MODIFICACIÓN DE DIAGRAMA - Redirigiendo...',
+      );
+      console.log('Data recibida:', data);
+
+      // Obtener el diagramId de los datos o de las rooms del cliente
+      let diagramId = data.diagramId;
+
+      if (!diagramId) {
+        // Intentar extraer el diagramId de las rooms donde está el cliente
+        const rooms = Array.from(client.rooms);
+        console.log('Rooms del cliente:', rooms);
+
+        const diagramRoom = rooms.find((room) => room.startsWith('diagram:'));
+        if (diagramRoom) {
+          diagramId = diagramRoom.replace('diagram:', '');
+          console.log('DiagramId extraído de room:', diagramId);
+        }
+      }
+
+      if (!diagramId) {
+        console.log('❌ No se pudo obtener diagramId');
+        client.emit('agent-generated', {
+          text: 'Error: No se pudo identificar el diagrama para modificar. Por favor, asegúrate de estar conectado a un diagrama.',
+        });
+        return;
+      }
+
+      const diagramData = {
+        prompt: data.prompt,
+        diagramId: diagramId,
+        currentDiagram: data.currentDiagram,
+      };
+
+      console.log('🔄 Redirigiendo a handleGenerateDiagram con:', {
+        diagramId,
+        prompt: data.prompt,
+      });
+
+      // Llamar al método de generación de diagramas internamente
+      return this.handleGenerateDiagram(diagramData, client);
+    }
+
+    console.log('⚠️ Solicitud de chat normal - NO modifica diagramas');
+
     try {
       const completion = await openai.chat.completions.create({
         model: 'gpt-4o',
@@ -214,15 +276,33 @@ export class DiagramSocketGateway
     @ConnectedSocket() client: Socket,
   ): Promise<void> {
     try {
+      console.log('🎯 GENERATE DIAGRAM REQUEST:');
+      console.log('Prompt:', data.prompt);
+      console.log('DiagramId:', data.diagramId);
+      console.log('Has currentDiagram:', !!data.currentDiagram);
+
       // Obtener el diagrama actual de la base de datos si no se envió
       let currentDiagram = data.currentDiagram;
       if (!currentDiagram) {
+        console.log('📋 Obteniendo diagrama de la base de datos...');
         const diagram = await this.diagramService.findOne(data.diagramId);
         currentDiagram = (diagram as any).model || { nodes: [], edges: [] };
+        console.log('📊 Diagrama obtenido:', {
+          nodes: currentDiagram?.nodes?.length || 0,
+          edges: currentDiagram?.edges?.length || 0,
+        });
       }
 
       const hasExistingDiagram =
         currentDiagram?.nodes && currentDiagram.nodes.length > 0;
+
+      console.log('🔍 hasExistingDiagram:', hasExistingDiagram);
+      if (hasExistingDiagram && currentDiagram) {
+        console.log(
+          '📝 Clases existentes:',
+          currentDiagram.nodes.map((n) => n.data?.label).filter(Boolean),
+        );
+      }
 
       const systemPrompt = `
 Eres un experto en UML y diseño de diagramas de clases. Tu tarea es ${hasExistingDiagram ? 'MODIFICAR Y EXTENDER' : 'generar'} un diagrama UML en formato JSON basado en la descripción del usuario.
@@ -231,21 +311,35 @@ ${
   hasExistingDiagram
     ? `
 ⚠️ INSTRUCCIONES CRÍTICAS PARA MODIFICACIÓN:
-1. DEBES PRESERVAR TODAS las clases existentes del diagrama actual
-2. DEBES PRESERVAR TODAS las relaciones (edges) existentes
-3. SOLO AGREGA las nuevas clases solicitadas por el usuario
-4. SOLO AGREGA nuevas relaciones si el usuario las menciona explícitamente
-5. NO ELIMINES ni modifiques clases o relaciones existentes
-6. Las nuevas clases deben tener IDs únicos diferentes a los existentes
+1. PRESERVA todas las clases existentes del diagrama actual
+2. PRESERVA todas las relaciones (edges) existentes
+3. Si el usuario solicita AGREGAR atributos a una clase existente, MODIFICA esa clase específica agregando los nuevos atributos
+4. Si el usuario solicita nuevas clases, agrégalas con IDs únicos
+5. Si el usuario solicita nuevas relaciones, agrégalas apropiadamente
+6. NO ELIMINES clases, atributos o relaciones existentes a menos que se solicite explícitamente
 7. Posiciona las nuevas clases en áreas libres del canvas (evita solapamiento)
+8. Mantén las posiciones existentes de las clases actuales
 
-DIAGRAMA ACTUAL QUE DEBES PRESERVAR:
+DIAGRAMA ACTUAL:
 ${JSON.stringify(currentDiagram, null, 2)}
 
+EJEMPLO ESPECÍFICO - Agregar atributo "semestre" a clase "Aula":
+Si el diagrama actual tiene una clase "Aula" con atributos [nombre, capacidad], y el usuario pide "agregar atributo semestre":
+1. Busca el nodo con data.label = "Aula"
+2. En su array "attributes", agrega: {"id": "attr-[timestamp]", "name": "semestre", "type": "String", "visibility": "private"}
+3. Mantén EXACTAMENTE todo lo demás: id del nodo, position, otros atributos, etc.
+4. Copia todos los demás nodos sin cambios
+5. Copia todos los edges sin cambios
+
+ANÁLISIS DEL PEDIDO:
+- Si menciona "agregar atributo X a clase Y": modifica la clase Y agregando el atributo X
+- Si menciona "crear clase nueva": agrega una nueva clase
+- Si menciona "agregar relación": agrega una nueva relación
+
 Tu respuesta DEBE incluir:
-- TODOS los nodos existentes (sin modificar)
-- TODOS los edges existentes (sin modificar)  
-- Los nuevos nodos solicitados
+- TODOS los nodos existentes (modificados SOLO si se solicita agregar atributos a clases específicas)
+- TODOS los edges existentes (sin modificar a menos que se solicite)  
+- Los nuevos nodos solicitados (si aplica)
 - Nuevos edges solo si son necesarios
 `
     : ''
@@ -362,14 +456,23 @@ ${
     ? `
 🚨 REGLAS CRÍTICAS PARA MODIFICACIÓN (OBLIGATORIO):
 1. NO CREAR UN DIAGRAMA NUEVO - Debes MODIFICAR el diagrama existente
-2. COPIA EXACTAMENTE todos los nodos existentes (mismo id, data, position)
-3. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
-4. SOLO AGREGA las nuevas clases que el usuario solicita
-5. Genera IDs únicos para las nuevas clases usando timestamps únicos
-6. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
-7. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
-8. NO modifiques ni elimines nada del diagrama existente
-9. Responde con el JSON completo: nodos existentes + nodos nuevos + edges existentes + edges nuevos (si aplica)
+2. Para AGREGAR ATRIBUTOS a clase existente:
+   - Copia la clase exactamente (mismo id, data.label, position, type)
+   - Agrega el nuevo atributo al array "attributes" existente
+   - Genera ID único para el nuevo atributo: "attr-[timestamp]"
+   - Mantén todos los atributos existentes
+3. Para NUEVAS CLASES:
+   - Copia exactamente todos los nodos existentes
+   - Agrega las nuevas clases con IDs únicos
+4. COPIA EXACTAMENTE todos los edges existentes (mismo id, source, target, data)
+5. Posiciona las nuevas clases en ubicaciones libres (x > 800 o y > 600)
+6. SOLO crea nuevas relaciones si el usuario las menciona explícitamente
+7. Responde con el JSON completo: nodos (existentes modificados + nuevos) + edges existentes + edges nuevos (si aplica)
+
+EJEMPLO para "agregar atributo semestre a clase Aula":
+- Busca el nodo con data.label = "Aula"
+- Agrega {"id": "attr-[timestamp]", "name": "semestre", "type": "String", "visibility": "private"} al array attributes
+- Mantén todo lo demás igual (id del nodo, position, otros atributos, etc.)
 `
     : `
 1. Genera IDs únicos usando timestamps
@@ -403,7 +506,12 @@ OBLIGATORIO: Siempre incluye al menos una relación si hay más de una clase. NU
 
 IMPORTANTE: Responde SOLO con el JSON del diagrama, SIN explicaciones, SIN markdown, SOLO el objeto JSON puro.
 
-IMPORTANTE: Si el usuario te pide aumentar algo al JSON del diagrama, no se debe crear otro diagrama desde cero, sino aumentar el diagrama existente con las nuevas clases/relaciones solicitadas.
+CASOS ESPECÍFICOS DE MODIFICACIÓN:
+1. "Agregar atributo X a clase Y": Modifica la clase Y agregando el atributo X, mantén todo lo demás
+2. "Crear nueva clase Z": Agrega clase Z sin modificar las existentes  
+3. "Agregar relación entre A y B": Agrega edge entre A y B, mantén clases y edges existentes
+4. "Modificar atributo X de clase Y": Cambia solo ese atributo específico
+5. NO crear diagrama desde cero - SIEMPRE partir del diagrama existente y aplicar solo las modificaciones solicitadas
 
 `;
 
@@ -418,26 +526,43 @@ IMPORTANTE: Si el usuario te pide aumentar algo al JSON del diagrama, no se debe
           console.log(`🤖 Intentando con modelo OpenAI: ${model}`);
 
           const userMessage = hasExistingDiagram
-            ? `🚨 IMPORTANTE: Ya existe un diagrama con ${currentDiagram?.nodes?.length || 0} clases y ${currentDiagram?.edges?.length || 0} relaciones. 
-            
-NO CREES UN DIAGRAMA NUEVO. Debes:
-1. COPIAR todos los nodos existentes tal cual están
-2. COPIAR todos los edges existentes tal cual están  
-3. AGREGAR las nuevas clases solicitadas: ${data.prompt}
+            ? `🚨 MODIFICAR DIAGRAMA EXISTENTE: Ya existe un diagrama con ${currentDiagram?.nodes?.length || 0} clases y ${currentDiagram?.edges?.length || 0} relaciones. 
 
-EJEMPLO DE RESPUESTA ESPERADA:
+🎯 ANÁLISIS DE LA SOLICITUD: "${data.prompt}"
+
+PASO A PASO PARA MODIFICAR CLASE EXISTENTE:
+1. Identifica si se menciona "agregar", "añadir" o "incluir" un atributo
+2. Identifica el nombre de la clase a modificar
+3. Busca en el diagrama actual el nodo con data.label igual al nombre de la clase
+4. En el array "attributes" de esa clase, agrega el nuevo atributo con:
+   - "id": "attr-" + timestamp único
+   - "name": nombre del atributo
+   - "type": tipo del atributo (String, int, boolean, etc.)
+   - "visibility": "private" (por defecto)
+5. Mantén TODOS los otros atributos y propiedades de la clase intactos
+
+EJEMPLO PRÁCTICO:
+Si solicitud = "agregar atributo semestre a clase Aula"
+→ Buscar nodo con data.label = "Aula"
+→ En su attributes array, agregar: {"id": "attr-1731340727000", "name": "semestre", "type": "String", "visibility": "private"}
+→ Mantener todos los otros atributos existentes
+
+FORMATO DE RESPUESTA OBLIGATORIO:
 {
   "nodes": [
-    ...todos los nodos existentes copiados exactamente...,
-    ...nuevos nodos solicitados...
+    {mismo nodo Aula pero con atributo semestre agregado},
+    {todos los otros nodos copiados exactamente}
   ],
   "edges": [
-    ...todos los edges existentes copiados exactamente...,
-    ...nuevos edges solo si se solicitan...
+    {todos los edges existentes copiados exactamente}
   ]
 }
 
-Solicitud del usuario: ${data.prompt}`
+🚨 SOLICITUD ESPECÍFICA: ${data.prompt}
+
+RESPUESTA REQUERIDA: JSON completo con la modificación aplicada
+
+IMPORTANTE: Responde con el JSON completo del diagrama modificado, incluyendo TODO el contenido existente más las modificaciones solicitadas.`
             : `Genera un diagrama UML basado en: ${data.prompt}`;
 
           completion = await openai.chat.completions.create({
@@ -482,6 +607,10 @@ Solicitud del usuario: ${data.prompt}`
 
       // Obtener la respuesta del modelo
       const responseText = completion.choices[0]?.message?.content || '{}';
+      console.log(
+        '🤖 Respuesta de OpenAI (primeros 500 chars):',
+        responseText.substring(0, 500),
+      );
 
       // Limpiar la respuesta de cualquier markdown (por si acaso)
       let cleanText = responseText
@@ -490,11 +619,36 @@ Solicitud del usuario: ${data.prompt}`
         .trim();
 
       const diagramJson = JSON.parse(cleanText);
+      console.log(
+        '📊 Diagrama parseado - Nodos:',
+        diagramJson.nodes?.length || 0,
+        'Edges:',
+        diagramJson.edges?.length || 0,
+      );
+
+      if (diagramJson.nodes) {
+        console.log(
+          '🏷️ Clases en respuesta:',
+          diagramJson.nodes.map((n) => n.data?.label).filter(Boolean),
+        );
+
+        // Verificar si Aula tiene semestre
+        const aulaNode = diagramJson.nodes.find(
+          (n) => n.data?.label === 'Aula',
+        );
+        if (aulaNode) {
+          console.log(
+            '🎯 Clase Aula encontrada con atributos:',
+            aulaNode.data.attributes?.map((a) => a.name) || [],
+          );
+        }
+      }
 
       // Actualizar el diagrama en la base de datos
       const updatedDiagram = await this.diagramService.update(data.diagramId, {
         model: diagramJson,
       });
+      console.log('💾 Diagrama actualizado en BD');
 
       // Emitir la respuesta al cliente
       client.emit('diagram-generated', {
@@ -502,6 +656,7 @@ Solicitud del usuario: ${data.prompt}`
         diagram: diagramJson,
         message: 'Diagrama generado exitosamente con OpenAI',
       });
+      console.log('📤 Respuesta enviada al cliente');
 
       const room = `diagram:${data.diagramId}`;
       client.to(room).emit('diagram-updated', {
