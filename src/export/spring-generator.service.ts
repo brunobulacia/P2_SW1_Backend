@@ -42,9 +42,16 @@ interface DiagramModel {
 export class SpringGeneratorService {
 
   private sanitizeFieldName(label: string): string {
-  return label
-    .replace(/[^a-zA-Z0-9]/g, '')
-    .replace(/^(.)/, (c) => c.toLowerCase());
+    // Remover tildes y convertir ñ -> n
+    const withoutAccents = label
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '') // Remover diacríticos
+      .replace(/ñ/g, 'n')
+      .replace(/Ñ/g, 'N');
+    
+    return withoutAccents
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .replace(/^(.)/, (c) => c.toLowerCase());
   }
   async generateFromModel(
     model: DiagramModel,
@@ -1218,6 +1225,9 @@ public class ${className}Controller {
       'import lombok.Data;',
       'import com.fasterxml.jackson.annotation.JsonBackReference;',
       'import com.fasterxml.jackson.annotation.JsonManagedReference;',
+      'import lombok.NoArgsConstructor;',
+      'import lombok.AllArgsConstructor;',
+      'import com.fasterxml.jackson.annotation.JsonIgnoreProperties;'
     ]);
 
     // id: si es hijo en herencia JOINED, NO declarar id aquí (usa PK del padre)
@@ -1239,7 +1249,8 @@ public class ${className}Controller {
     for (const attr of attributes) {
       if (attr.name === 'id') continue;
       const t = this.mapType(attr.type);
-      fields.push(`    private ${t} ${attr.name};`);
+      const sanitizedName = this.sanitizeFieldName(attr.name);
+      fields.push(`    private ${t} ${sanitizedName};`);
       
       // Agregar imports para tipos de fecha/tiempo si se detectan
       const attrTypeLower = (attr.type || '').toLowerCase();
@@ -1307,9 +1318,6 @@ public class ${className}Controller {
     const body = `package com.example.demo.model;
 
 ${Array.from(imports).join('\n')}
-import lombok.NoArgsConstructor;
-import lombok.AllArgsConstructor;
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 
 @Data
 @NoArgsConstructor

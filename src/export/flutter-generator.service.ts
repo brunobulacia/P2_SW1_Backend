@@ -599,6 +599,21 @@ ${listTiles}
         allAttributes = [...parentAttrs, ...childAttrsWithoutId];
     }
 
+    // ✅ SANITIZAR NOMBRES DE ATRIBUTOS (remover tildes/eñes)
+    allAttributes = allAttributes.map(attr => ({
+        ...attr,
+        name: this.sanitizeFieldName(attr.name)
+    }));
+
+    // ✅ AGREGAR campo 'id' si NO tiene uno (TODAS las clases necesitan id, excepto composiciones)
+    const hasId = allAttributes.some(a => a.name === 'id');
+    if (!hasId && !metadata.isCompositionChild) {
+        allAttributes = [
+            { id: 'id', name: 'id', type: 'int', visibility: 'public' },
+            ...allAttributes
+        ];
+    }
+
     const fields: string[] = [];
 
     //si composicion, se agrega un campo para el id del padre
@@ -1014,6 +1029,21 @@ class _${className}ListScreenState extends State<${className}ListScreen> {
         allAttributes = [...parentAttrs, ...childAttrsWithoutId];
     }
 
+    // ✅ SANITIZAR NOMBRES DE ATRIBUTOS (remover tildes/eñes)
+    allAttributes = allAttributes.map(attr => ({
+        ...attr,
+        name: this.sanitizeFieldName(attr.name)
+    }));
+
+    // ✅ AGREGAR campo 'id' si NO tiene uno (TODAS las clases necesitan id, excepto composiciones)
+    const hasId = allAttributes.some(a => a.name === 'id');
+    if (!hasId && !metadata.isCompositionChild) {
+        allAttributes = [
+            { id: 'id', name: 'id', type: 'int', visibility: 'public' },
+            ...allAttributes
+        ];
+    }
+
     const attributeWidgets = allAttributes
         .map(attr => `            Text('${attr.name}: \${${lowerClass}.${attr.name} ?? "N/A"}', style: const TextStyle(fontSize: 16)),`)
         .join('\n');
@@ -1109,6 +1139,21 @@ ${attributeWidgets}
       const parentAttrs = attributesMap[metadata.parentClass] || [];
       const childAttrsWithoutId = attributes.filter(a => a.name !== 'id');
       allAttributes = [...parentAttrs, ...childAttrsWithoutId];
+    }
+
+    // ✅ SANITIZAR NOMBRES DE ATRIBUTOS (remover tildes/eñes)
+    allAttributes = allAttributes.map(attr => ({
+        ...attr,
+        name: this.sanitizeFieldName(attr.name)
+    }));
+
+    // ✅ AGREGAR campo 'id' si NO tiene uno (TODAS las clases necesitan id, excepto composiciones)
+    const hasId = allAttributes.some(a => a.name === 'id');
+    if (!hasId && !metadata.isCompositionChild) {
+        allAttributes = [
+            { id: 'id', name: 'id', type: 'int', visibility: 'public' },
+            ...allAttributes
+        ];
     }
 
     //controllers
@@ -1512,9 +1557,16 @@ ${relationWidgets}
     }
 
     private sanitizeFieldName(label: string): string {
-        return label
-        .replace(/[^a-zA-Z0-9]/g, '')
-        .replace(/^(.)/, (c) => c.toLowerCase());
+        // Remover tildes y convertir ñ -> n
+        const withoutAccents = label
+            .normalize('NFD')
+            .replace(/[\u0300-\u036f]/g, '') // Remover diacríticos
+            .replace(/ñ/g, 'n')
+            .replace(/Ñ/g, 'N');
+        
+        return withoutAccents
+            .replace(/[^a-zA-Z0-9]/g, '')
+            .replace(/^(.)/, (c) => c.toLowerCase());
     }
 
     private ensureDir(dir: string): void {
